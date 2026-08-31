@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .client import SecError
 from .financials import FinancialExtraction, FinancialFact
 from .schema import (
     CompanyReference,
@@ -77,6 +76,7 @@ class RatioExtraction:
     report_date: str
     accession_number: str
     calculated_at: str
+    warnings: tuple[str, ...]
     ratios: tuple[FinancialRatio, ...]
 
 
@@ -102,16 +102,25 @@ def calculate_ratios(
 
     facts_by_key = {fact.key: fact for fact in financials.facts}
     calculated: list[FinancialRatio] = []
+    warnings: list[str] = []
     for spec in RATIOS:
-        try:
-            numerator = facts_by_key[spec.numerator_key]
-            denominator = facts_by_key[spec.denominator_key]
-        except KeyError as exc:
-            raise SecError(
-                f"Cannot calculate {spec.name}: required fact {exc.args[0]!r} is missing."
-            ) from exc
+        missing_inputs = [
+            key
+            for key in (spec.numerator_key, spec.denominator_key)
+            if key not in facts_by_key
+        ]
+        if missing_inputs:
+            warnings.append(
+                f"Skipped {spec.name}: missing input fact(s) "
+                + ", ".join(missing_inputs)
+                + "."
+            )
+            continue
+        numerator = facts_by_key[spec.numerator_key]
+        denominator = facts_by_key[spec.denominator_key]
         if denominator.value == 0:
-            raise SecError(f"Cannot calculate {spec.name}: denominator is zero.")
+            warnings.append(f"Skipped {spec.name}: denominator is zero.")
+            continue
 
         value = numerator.value / denominator.value
         percentage = round(value * 100, 2)
@@ -140,6 +149,7 @@ def calculate_ratios(
         report_date=financials.report_date,
         accession_number=financials.accession_number,
         calculated_at=datetime.now(UTC).isoformat(),
+        warnings=tuple(warnings),
         ratios=tuple(calculated),
     )
     output_path = destination / "ratios.json"

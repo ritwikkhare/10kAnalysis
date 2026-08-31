@@ -84,7 +84,18 @@ class FinancialExtraction:
     accession_number: str
     extracted_at: str
     source_api_url: str
+    missing_metrics: tuple[str, ...]
+    warnings: tuple[str, ...]
     facts: tuple[FinancialFact, ...]
+
+
+@dataclass(frozen=True)
+class QuarterMatch:
+    accession_number: str
+    current_fiscal_year: int
+    previous_fiscal_year: int
+    fiscal_period: str
+    supporting_metrics: tuple[str, ...]
 
 
 class JsonFetcher(Protocol):
@@ -132,6 +143,93 @@ def _choose_fact(
             reverse=True,
         )
     return candidates[0] if candidates else None
+
+
+def fiscal_period_identity(financials: FinancialExtraction) -> tuple[int, str]:
+    """Return one unambiguous fiscal year/period shared by duration facts."""
+
+    identities = {
+        (fact.fiscal_year, fact.fiscal_period)
+        for fact in financials.facts
+        if fact.period_type == "duration"
+        and fact.fiscal_year is not None
+        and fact.fiscal_period is not None
+    }
+    if len(identities) != 1:
+        raise SecError(
+            "SEC facts do not identify one unambiguous fiscal year and period."
+        )
+    fiscal_year, fiscal_period = identities.pop()
+    return int(fiscal_year), str(fiscal_period)
+
+
+def find_prior_year_quarter(
+    fetch_json: JsonFetcher,
+    current: FinancialExtraction,
+) -> QuarterMatch:
+    """Find the prior-year 10-Q accession with the same SEC fiscal period focus."""
+
+    if current.form != "10-Q":
+        raise SecError("Prior-year quarter matching requires a Form 10-Q.")
+    current_fiscal_year, fiscal_period = fiscal_period_identity(current)
+    previous_fiscal_year = current_fiscal_year - 1
+    company_facts = fetch_json(COMPANY_FACTS_URL.format(cik=int(current.cik)))
+    us_gaap = company_facts.get("facts", {}).get("us-gaap", {})
+    if not isinstance(us_gaap, dict):
+        raise SecError("SEC Company Facts response does not contain us-gaap facts.")
+
+    metric_votes: dict[str, set[str]] = {}
+    for metric in METRICS:
+        if metric.period_type != "duration":
+            continue
+        candidates: set[str] = set()
+        for concept in metric.concepts:
+            concept_data = us_gaap.get(concept)
+            if not isinstance(concept_data, dict):
+                continue
+            entries = concept_data.get("units", {}).get("USD", [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                accession = entry.get("accn")
+                if (
+                    entry.get("form") == "10-Q"
+                    and entry.get("fy") == previous_fiscal_year
+                    and entry.get("fp") == fiscal_period
+                    and isinstance(accession, str)
+                    and accession != current.accession_number
+                    and str(entry.get("end", "")) < current.report_date
+                ):
+                    candidates.add(accession)
+        for accession in candidates:
+            metric_votes.setdefault(accession, set()).add(metric.key)
+
+    if not metric_votes:
+        raise SecError(
+            f"No prior-year {fiscal_period} 10-Q evidence was found for "
+            f"fiscal year {previous_fiscal_year}."
+        )
+    ranked = sorted(
+        metric_votes.items(),
+        key=lambda item: (len(item[1]), item[0]),
+        reverse=True,
+    )
+    best_accession, supporting_metrics = ranked[0]
+    best_score = len(supporting_metrics)
+    if best_score < 2:
+        raise SecError(
+            "Prior-year quarter matching was not supported by at least two "
+            "independent duration metrics."
+        )
+    if len(ranked) > 1 and len(ranked[1][1]) == best_score:
+        raise SecError("Prior-year quarter matching was ambiguous across SEC filings.")
+    return QuarterMatch(
+        accession_number=best_accession,
+        current_fiscal_year=current_fiscal_year,
+        previous_fiscal_year=previous_fiscal_year,
+        fiscal_period=fiscal_period,
+        supporting_metrics=tuple(sorted(supporting_metrics)),
+    )
 
 
 def extract_financials(
@@ -206,10 +304,13 @@ def extract_financials(
             )
         )
 
-    if missing:
-        raise SecError(
-            "Could not find filing-matched SEC facts for: " + ", ".join(missing)
-        )
+    if not extracted:
+        raise SecError("The filing contained no supported, filing-matched SEC facts.")
+
+    warnings = tuple(
+        f"Unsupported or missing filing-matched fact: {name}."
+        for name in missing
+    )
 
     result = FinancialExtraction(
         company_name=metadata.company_name,
@@ -220,6 +321,8 @@ def extract_financials(
         accession_number=metadata.accession_number,
         extracted_at=datetime.now(UTC).isoformat(),
         source_api_url=source_api_url,
+        missing_metrics=tuple(missing),
+        warnings=warnings,
         facts=tuple(extracted),
     )
     output_path = destination / "financials.json"

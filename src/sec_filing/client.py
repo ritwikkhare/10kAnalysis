@@ -140,6 +140,23 @@ class SecClient:
             )
         if limit < 1:
             raise ValueError("Filing limit must be at least one.")
+        filings = self._filing_records(cik, form=normalized_form)
+        if len(filings) >= limit:
+            return filings[:limit]
+        if not filings:
+            raise SecError(f"No {normalized_form} filing was found for this company.")
+        raise SecError(
+            f"Only found {len(filings)} {normalized_form} filing(s); {limit} required."
+        )
+
+    def _filing_records(
+        self,
+        cik: int,
+        *,
+        form: str | None = None,
+    ) -> list[dict[str, str]]:
+        """Return normalized recent submission rows, optionally filtered by form."""
+
         submission = self._fetch_json(SUBMISSIONS_URL.format(cik=cik))
         recent = submission.get("filings", {}).get("recent", {})
         required = (
@@ -154,17 +171,21 @@ class SecClient:
 
         filings: list[dict[str, str]] = []
         for index, filing_form in enumerate(recent["form"]):
-            if filing_form == normalized_form:
+            if form is None or filing_form == form:
                 try:
                     filings.append({key: str(recent[key][index]) for key in required})
                 except IndexError as exc:
                     raise SecError("SEC submissions response has inconsistent columns.") from exc
-                if len(filings) == limit:
-                    return filings
-        if not filings:
-            raise SecError(f"No {normalized_form} filing was found for this company.")
+        return filings
+
+    def filing_by_accession(self, cik: int, accession_number: str) -> dict[str, str]:
+        """Find one exact recent filing row by its immutable accession number."""
+
+        for filing in self._filing_records(cik):
+            if filing["accessionNumber"] == accession_number:
+                return filing
         raise SecError(
-            f"Only found {len(filings)} {normalized_form} filing(s); {limit} required."
+            f"Filing {accession_number!r} was not found in the company's recent history."
         )
 
     def latest_10k(self, cik: int) -> dict[str, str]:
@@ -223,6 +244,25 @@ class SecClient:
             )
             for filing in filings
         ]
+
+    def download_filing_by_accession(
+        self,
+        ticker: str,
+        accession_number: str,
+        output_dir: Path,
+    ) -> tuple[FilingMetadata, Path]:
+        """Download one filing selected by accession rather than recency."""
+
+        normalized_ticker = ticker.strip().upper()
+        cik, company_name = self.resolve_ticker(normalized_ticker)
+        filing = self.filing_by_accession(cik, accession_number)
+        return self._download_filing_record(
+            normalized_ticker,
+            cik,
+            company_name,
+            filing,
+            output_dir,
+        )
 
     def _download_filing_record(
         self,

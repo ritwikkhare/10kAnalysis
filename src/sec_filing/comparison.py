@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .client import SecError
-from .financials import FinancialExtraction, FinancialFact
+from .financials import FinancialExtraction, FinancialFact, fiscal_period_identity
 from .ratios import FinancialRatio, RatioExtraction, RatioInput
 from .schema import (
     CompanyReference,
@@ -61,7 +61,11 @@ class YearOverYearComparison:
     previous_report_date: str
     current_accession_number: str
     previous_accession_number: str
+    form: str
+    comparison_basis: str
+    fiscal_period: str
     calculated_at: str
+    warnings: tuple[str, ...]
     changes: tuple[FinancialChange, ...]
 
 
@@ -129,21 +133,47 @@ def compare_years(
     previous_ratios: RatioExtraction,
     destination: Path,
 ) -> tuple[YearOverYearComparison, Path]:
-    """Compare two annual filings and preserve both sides of every conclusion."""
+    """Compare matching prior-year filings and preserve every input citation."""
 
     if current_financials.ticker != previous_financials.ticker:
         raise SecError("Cannot compare filings from different companies.")
+    if current_financials.form != previous_financials.form:
+        raise SecError("Cannot compare different SEC filing forms.")
     if current_financials.report_date <= previous_financials.report_date:
         raise SecError("Current filing must have a later report date than previous filing.")
+    current_fiscal_year, current_fiscal_period = fiscal_period_identity(
+        current_financials
+    )
+    previous_fiscal_year, previous_fiscal_period = fiscal_period_identity(
+        previous_financials
+    )
+    if current_fiscal_period != previous_fiscal_period:
+        raise SecError(
+            "Filings must have the same fiscal period focus for comparison."
+        )
+    if current_fiscal_year - previous_fiscal_year != 1:
+        raise SecError("Filings must represent consecutive fiscal years.")
+    comparison_basis = (
+        "same_fiscal_quarter_prior_year"
+        if current_financials.form == "10-Q"
+        else "consecutive_fiscal_years"
+    )
 
     changes: list[FinancialChange] = []
+    warnings: list[str] = []
     previous_facts = {fact.key: fact for fact in previous_financials.facts}
     for current in current_financials.facts:
         previous = previous_facts.get(current.key)
         if previous is None:
-            raise SecError(f"Previous filing is missing required fact {current.key!r}.")
+            warnings.append(
+                f"Skipped {current.name}: the prior-year filing lacks {current.key}."
+            )
+            continue
         if previous.value == 0:
-            raise SecError(f"Cannot compare {current.name}: previous value is zero.")
+            warnings.append(
+                f"Skipped {current.name}: the prior-year value is zero."
+            )
+            continue
         change = round(
             ((current.value - previous.value) / abs(previous.value)) * 100,
             2,
@@ -171,7 +201,10 @@ def compare_years(
     for current in current_ratios.ratios:
         previous = previous_ratio_map.get(current.key)
         if previous is None:
-            raise SecError(f"Previous filing is missing required ratio {current.key!r}.")
+            warnings.append(
+                f"Skipped {current.name}: the prior-year ratio is unavailable."
+            )
+            continue
         change = round(current.percentage - previous.percentage, 2)
         changes.append(
             FinancialChange(
@@ -192,6 +225,9 @@ def compare_years(
             )
         )
 
+    if not changes:
+        raise SecError("No safely comparable facts or ratios were available.")
+
     result = YearOverYearComparison(
         company_name=current_financials.company_name,
         ticker=current_financials.ticker,
@@ -199,7 +235,11 @@ def compare_years(
         previous_report_date=previous_financials.report_date,
         current_accession_number=current_financials.accession_number,
         previous_accession_number=previous_financials.accession_number,
+        form=current_financials.form,
+        comparison_basis=comparison_basis,
+        fiscal_period=current_fiscal_period,
         calculated_at=datetime.now(UTC).isoformat(),
+        warnings=tuple(warnings),
         changes=tuple(changes),
     )
     output_path = destination / "comparison.json"

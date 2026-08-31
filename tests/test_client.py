@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ from urllib.request import Request
 from sec_filing.client import SecClient, SecError
 from sec_filing.cli import build_parser
 from sec_filing.comparison import compare_years
-from sec_filing.financials import extract_financials
+from sec_filing.financials import extract_financials, find_prior_year_quarter
 from sec_filing.ratios import calculate_ratios
 from sec_filing.report import build_html_report, build_html_report_from_files
 from sec_filing.risks import compare_risk_sections, extract_risk_section
@@ -19,20 +20,42 @@ from sec_filing.schema import SCHEMA_VERSION, validate_document
 TICKERS = {
     "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
     "1": {"cik_str": 789019, "ticker": "MSFT", "title": "Microsoft Corp"},
+    "2": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"},
+    "3": {"cik_str": 1318605, "ticker": "TSLA", "title": "Tesla, Inc."},
 }
 
 SUBMISSION = {
     "filings": {
         "recent": {
-            "form": ["10-Q", "10-K", "10-K"],
-            "filingDate": ["2026-08-01", "2025-10-31", "2024-11-01"],
-            "reportDate": ["2026-06-27", "2025-09-27", "2024-09-28"],
+            "form": ["10-Q", "10-Q", "10-Q", "10-K", "10-K"],
+            "filingDate": [
+                "2026-08-01",
+                "2026-05-01",
+                "2025-08-01",
+                "2025-10-31",
+                "2024-11-01",
+            ],
+            "reportDate": [
+                "2026-06-27",
+                "2026-03-28",
+                "2025-06-28",
+                "2025-09-27",
+                "2024-09-28",
+            ],
             "accessionNumber": [
                 "0000320193-26-000001",
+                "0000320193-26-000000",
+                "0000320193-25-000050",
                 "0000320193-25-000079",
                 "0000320193-24-000123",
             ],
-            "primaryDocument": ["aapl-20260627.htm", "aapl-20250927.htm", "aapl-20240928.htm"],
+            "primaryDocument": [
+                "aapl-20260627.htm",
+                "aapl-20260328.htm",
+                "aapl-20250628.htm",
+                "aapl-20250927.htm",
+                "aapl-20240928.htm",
+            ],
         }
     }
 }
@@ -52,8 +75,39 @@ MICROSOFT_SUBMISSION = {
     }
 }
 
+NVIDIA_SUBMISSION = {
+    "filings": {
+        "recent": {
+            "form": ["10-Q", "10-K"],
+            "filingDate": ["2026-05-20", "2026-02-25"],
+            "reportDate": ["2026-04-26", "2026-01-25"],
+            "accessionNumber": [
+                "0001045810-26-000100",
+                "0001045810-26-000021",
+            ],
+            "primaryDocument": ["nvda-20260426.htm", "nvda-20260125.htm"],
+        }
+    }
+}
+
+TESLA_SUBMISSION = {
+    "filings": {
+        "recent": {
+            "form": ["10-Q", "10-K"],
+            "filingDate": ["2026-04-23", "2026-01-29"],
+            "reportDate": ["2026-03-31", "2025-12-31"],
+            "accessionNumber": [
+                "0001318605-26-000020",
+                "0001318605-26-000010",
+            ],
+            "primaryDocument": ["tsla-20260331.htm", "tsla-20251231.htm"],
+        }
+    }
+}
+
 TARGET_ACCESSION = "0000320193-25-000079"
 QUARTERLY_ACCESSION = "0000320193-26-000001"
+PRIOR_YEAR_QUARTERLY_ACCESSION = "0000320193-25-000050"
 
 
 def fact(value, *, start=None):
@@ -101,6 +155,21 @@ def quarterly_fact(value, *, start=None):
     return result
 
 
+def prior_year_quarterly_fact(value, *, start=None):
+    result = {
+        "end": "2025-06-28",
+        "val": value,
+        "accn": PRIOR_YEAR_QUARTERLY_ACCESSION,
+        "fy": 2025,
+        "fp": "Q3",
+        "form": "10-Q",
+        "filed": "2025-08-01",
+    }
+    if start:
+        result["start"] = start
+    return result
+
+
 COMPANY_FACTS = {
     "facts": {
         "us-gaap": {
@@ -110,6 +179,9 @@ COMPANY_FACTS = {
                     "USD": [
                         quarterly_fact(98_000_000_000, start="2026-03-29"),
                         quarterly_fact(310_000_000_000, start="2025-09-28"),
+                        prior_year_quarterly_fact(
+                            285_000_000_000, start="2024-09-29"
+                        ),
                         fact(102_000_000_000, start="2025-06-29"),
                         fact(416_161_000_000, start="2024-09-29"),
                         previous_fact(391_035_000_000, start="2023-10-01"),
@@ -121,6 +193,9 @@ COMPANY_FACTS = {
                 "units": {
                     "USD": [
                         quarterly_fact(75_000_000_000, start="2025-09-28"),
+                        prior_year_quarterly_fact(
+                            68_000_000_000, start="2024-09-29"
+                        ),
                         fact(112_010_000_000, start="2024-09-29"),
                         previous_fact(93_736_000_000, start="2023-10-01"),
                     ]
@@ -131,6 +206,7 @@ COMPANY_FACTS = {
                 "units": {
                     "USD": [
                         quarterly_fact(370_000_000_000),
+                        prior_year_quarterly_fact(350_000_000_000),
                         fact(359_241_000_000),
                         previous_fact(364_980_000_000),
                     ]
@@ -141,6 +217,7 @@ COMPANY_FACTS = {
                 "units": {
                     "USD": [
                         quarterly_fact(290_000_000_000),
+                        prior_year_quarterly_fact(280_000_000_000),
                         fact(285_508_000_000),
                         previous_fact(308_030_000_000),
                     ]
@@ -151,6 +228,9 @@ COMPANY_FACTS = {
                 "units": {
                     "USD": [
                         quarterly_fact(82_000_000_000, start="2025-09-28"),
+                        prior_year_quarterly_fact(
+                            76_000_000_000, start="2024-09-29"
+                        ),
                         fact(111_482_000_000, start="2024-09-29"),
                         previous_fact(118_254_000_000, start="2023-10-01"),
                     ]
@@ -158,6 +238,68 @@ COMPANY_FACTS = {
             },
         }
     }
+}
+
+
+def pilot_company_facts(
+    accession: str,
+    report_date: str,
+    filing_date: str,
+    fiscal_year: int,
+    *,
+    revenue_concept: str = "RevenueFromContractWithCustomerExcludingAssessedTax",
+):
+    def entry(value, *, start=None):
+        item = {
+            "end": report_date,
+            "val": value,
+            "accn": accession,
+            "fy": fiscal_year,
+            "fp": "FY",
+            "form": "10-K",
+            "filed": filing_date,
+        }
+        if start:
+            item["start"] = start
+        return item
+
+    period_start = f"{fiscal_year - 1}-01-01"
+    concepts = {
+        revenue_concept: {
+            "label": "Revenue",
+            "units": {"USD": [entry(100_000_000_000, start=period_start)]},
+        },
+        "NetIncomeLoss": {
+            "label": "Net income",
+            "units": {"USD": [entry(20_000_000_000, start=period_start)]},
+        },
+        "Assets": {"label": "Assets", "units": {"USD": [entry(150_000_000_000)]}},
+        "Liabilities": {
+            "label": "Liabilities",
+            "units": {"USD": [entry(60_000_000_000)]},
+        },
+        "NetCashProvidedByUsedInOperatingActivities": {
+            "label": "Operating cash flow",
+            "units": {"USD": [entry(25_000_000_000, start=period_start)]},
+        },
+    }
+    return {"facts": {"us-gaap": concepts}}
+
+
+PILOT_COMPANY_FACTS = {
+    789019: pilot_company_facts(
+        "0000950170-26-000001", "2026-06-30", "2026-07-29", 2026
+    ),
+    1045810: pilot_company_facts(
+        "0001045810-26-000021",
+        "2026-01-25",
+        "2026-02-25",
+        2026,
+        revenue_concept="Revenues",
+    ),
+    1318605: pilot_company_facts(
+        "0001318605-26-000010", "2025-12-31", "2026-01-29", 2025
+    ),
 }
 
 
@@ -173,16 +315,35 @@ class FakeTransport:
             return json.dumps(SUBMISSION).encode()
         if "/submissions/CIK0000789019.json" in request.full_url:
             return json.dumps(MICROSOFT_SUBMISSION).encode()
+        if "/submissions/CIK0001045810.json" in request.full_url:
+            return json.dumps(NVIDIA_SUBMISSION).encode()
+        if "/submissions/CIK0001318605.json" in request.full_url:
+            return json.dumps(TESLA_SUBMISSION).encode()
         if "/api/xbrl/companyfacts/CIK0000320193.json" in request.full_url:
             return json.dumps(COMPANY_FACTS).encode()
+        for cik, facts in PILOT_COMPANY_FACTS.items():
+            if f"/api/xbrl/companyfacts/CIK{cik:010d}.json" in request.full_url:
+                return json.dumps(facts).encode()
         if request.full_url.endswith("aapl-20250927.htm"):
             return b"<html><body>Apple 10-K</body></html>"
         if request.full_url.endswith("aapl-20240928.htm"):
             return b"<html><body>Apple previous 10-K</body></html>"
         if request.full_url.endswith("aapl-20260627.htm"):
             return b"<html><body>Apple 10-Q</body></html>"
+        if request.full_url.endswith("aapl-20250628.htm"):
+            return b"<html><body>Apple prior-year 10-Q</body></html>"
         if request.full_url.endswith("msft-20260630.htm"):
             return b"<html><body>Microsoft 10-K</body></html>"
+        if request.full_url.endswith("msft-20260630q.htm"):
+            return b"<html><body>Microsoft 10-Q</body></html>"
+        if request.full_url.endswith("nvda-20260125.htm"):
+            return b"<html><body>NVIDIA 10-K</body></html>"
+        if request.full_url.endswith("nvda-20260426.htm"):
+            return b"<html><body>NVIDIA 10-Q</body></html>"
+        if request.full_url.endswith("tsla-20251231.htm"):
+            return b"<html><body>Tesla 10-K</body></html>"
+        if request.full_url.endswith("tsla-20260331.htm"):
+            return b"<html><body>Tesla 10-Q</body></html>"
         raise AssertionError(f"Unexpected URL: {request.full_url}")
 
 
@@ -262,6 +423,121 @@ class SecClientTests(unittest.TestCase):
             self.assertIn("/789019/", metadata.official_url)
             self.assertEqual(
                 html_path.read_bytes(), b"<html><body>Microsoft 10-K</body></html>"
+            )
+
+    def test_four_company_pilot_downloads_both_filing_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for ticker in ("AAPL", "MSFT", "NVDA", "TSLA"):
+                with self.subTest(ticker=ticker, form="10-K"):
+                    annual, annual_html = self.client.download_latest_filing(
+                        ticker, root, form="10-K"
+                    )
+                    self.assertEqual(annual.ticker, ticker)
+                    self.assertEqual(annual.form, "10-K")
+                    self.assertTrue(annual_html.exists())
+                with self.subTest(ticker=ticker, form="10-Q"):
+                    quarterly, quarterly_html = self.client.download_latest_filing(
+                        ticker, root, form="10-Q"
+                    )
+                    self.assertEqual(quarterly.ticker, ticker)
+                    self.assertEqual(quarterly.form, "10-Q")
+                    self.assertTrue(quarterly_html.exists())
+
+    def test_four_company_pilot_extracts_annual_facts_and_ratios(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for ticker in ("AAPL", "MSFT", "NVDA", "TSLA"):
+                with self.subTest(ticker=ticker):
+                    metadata, html_path = self.client.download_latest_filing(
+                        ticker, root, form="10-K"
+                    )
+                    financials, _ = extract_financials(
+                        self.client.fetch_json, metadata, html_path.parent
+                    )
+                    ratios, _ = calculate_ratios(financials, html_path.parent)
+                    self.assertEqual(len(financials.facts), 5)
+                    self.assertEqual(financials.missing_metrics, ())
+                    self.assertEqual(len(ratios.ratios), 3)
+                    self.assertEqual(ratios.warnings, ())
+                    revenue = next(
+                        fact for fact in financials.facts if fact.key == "revenue"
+                    )
+                    expected_concept = "Revenues" if ticker == "NVDA" else (
+                        "RevenueFromContractWithCustomerExcludingAssessedTax"
+                    )
+                    self.assertEqual(revenue.concept, expected_concept)
+
+    def test_matches_same_fiscal_quarter_from_prior_year(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            current_metadata, current_html = self.client.download_latest_filing(
+                "AAPL", root, form="10-Q"
+            )
+            current_financials, _ = extract_financials(
+                self.client.fetch_json, current_metadata, current_html.parent
+            )
+            match = find_prior_year_quarter(
+                self.client.fetch_json, current_financials
+            )
+
+            self.assertEqual(match.fiscal_period, "Q3")
+            self.assertEqual(match.current_fiscal_year, 2026)
+            self.assertEqual(match.previous_fiscal_year, 2025)
+            self.assertEqual(
+                match.accession_number, PRIOR_YEAR_QUARTERLY_ACCESSION
+            )
+            self.assertNotEqual(match.accession_number, "0000320193-26-000000")
+
+            previous_metadata, previous_html = self.client.download_filing_by_accession(
+                "AAPL", match.accession_number, root
+            )
+            previous_financials, _ = extract_financials(
+                self.client.fetch_json, previous_metadata, previous_html.parent
+            )
+            current_ratios, _ = calculate_ratios(
+                current_financials, current_html.parent
+            )
+            previous_ratios, _ = calculate_ratios(
+                previous_financials, previous_html.parent
+            )
+            comparison, comparison_path = compare_years(
+                current_financials,
+                previous_financials,
+                current_ratios,
+                previous_ratios,
+                current_html.parent,
+            )
+            self.assertEqual(
+                comparison.comparison_basis, "same_fiscal_quarter_prior_year"
+            )
+            self.assertEqual(comparison.fiscal_period, "Q3")
+            self.assertEqual(comparison.form, "10-Q")
+            self.assertEqual(len(comparison.changes), 8)
+            validate_document(
+                json.loads(comparison_path.read_text()),
+                expected_record_type="filing_comparison",
+            )
+
+    def test_missing_fact_is_reported_and_dependent_ratio_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, html_path = self.client.download_latest_10k(
+                "AAPL", Path(temporary)
+            )
+            incomplete = copy.deepcopy(COMPANY_FACTS)
+            del incomplete["facts"]["us-gaap"]["Liabilities"]
+            financials, _ = extract_financials(
+                lambda _url: incomplete,
+                metadata,
+                html_path.parent,
+            )
+            ratios, _ = calculate_ratios(financials, html_path.parent)
+
+            self.assertEqual(financials.missing_metrics, ("Total liabilities",))
+            self.assertEqual(len(financials.facts), 4)
+            self.assertEqual(len(ratios.ratios), 2)
+            self.assertTrue(
+                any("Liabilities-to-assets" in warning for warning in ratios.warnings)
             )
 
     def test_downloads_latest_10k_and_writes_traceable_metadata(self) -> None:
