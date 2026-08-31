@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from html.parser import HTMLParser
-import json
 from pathlib import Path
 import re
 
 from .client import FilingMetadata, SecError
+from .schema import (
+    CompanyReference,
+    EvidenceReference,
+    FilingReference,
+    write_document,
+)
 
 
 ITEM_1A = re.compile(r"^Item\s+1A\.\s*Risk Factors$", re.IGNORECASE)
@@ -94,10 +99,13 @@ class RiskPassage:
 class RiskSection:
     company_name: str
     ticker: str
+    cik: str
     form: str
+    filing_date: str
     report_date: str
     accession_number: str
     filing_url: str
+    filing_index_url: str
     section: str
     extracted_at: str
     passages: tuple[RiskPassage, ...]
@@ -180,19 +188,47 @@ def extract_risk_section(
     result = RiskSection(
         company_name=metadata.company_name,
         ticker=metadata.ticker,
+        cik=metadata.cik,
         form=metadata.form,
+        filing_date=metadata.filing_date,
         report_date=metadata.report_date,
         accession_number=metadata.accession_number,
         filing_url=metadata.official_url,
+        filing_index_url=metadata.filing_index_url,
         section="Item 1A. Risk Factors",
         extracted_at=datetime.now(UTC).isoformat(),
         passages=passages,
     )
-    destination.mkdir(parents=True, exist_ok=True)
     output_path = destination / "risk_factors.json"
-    output_path.write_text(
-        json.dumps(asdict(result), indent=2) + "\n",
-        encoding="utf-8",
+    write_document(
+        output_path,
+        record_type="risk_passages",
+        company=CompanyReference(
+            cik=metadata.cik,
+            ticker=metadata.ticker,
+            name=metadata.company_name,
+        ),
+        filings=(
+            FilingReference(
+                accession_number=metadata.accession_number,
+                form=metadata.form,
+                filing_date=metadata.filing_date,
+                report_date=metadata.report_date,
+                official_url=metadata.official_url,
+                filing_index_url=metadata.filing_index_url,
+            ),
+        ),
+        evidence=tuple(
+            EvidenceReference(
+                evidence_id=passage.evidence_id,
+                evidence_type="risk_passage",
+                label=f"Item 1A passage {passage.passage_number}",
+                accession_number=passage.accession_number,
+                source_url=passage.source_url,
+            )
+            for passage in result.passages
+        ),
+        payload=result,
     )
     return result, output_path
 
@@ -301,10 +337,87 @@ def compare_risk_sections(
         materially_changed_count=changed_count,
         changes=tuple(changes),
     )
-    destination.mkdir(parents=True, exist_ok=True)
     output_path = destination / "risk_changes.json"
-    output_path.write_text(
-        json.dumps(asdict(result), indent=2) + "\n",
-        encoding="utf-8",
+    cited_passages = []
+    for change in result.changes:
+        if change.current is not None:
+            cited_passages.append(change.current)
+        if change.previous is not None:
+            cited_passages.append(change.previous)
+    passage_evidence = [
+        EvidenceReference(
+            evidence_id=passage.evidence_id,
+            evidence_type="risk_passage",
+            label=f"Item 1A passage {passage.passage_number}",
+            accession_number=passage.accession_number,
+            source_url=passage.source_url,
+        )
+        for passage in cited_passages
+    ]
+    change_evidence = [
+        EvidenceReference(
+            evidence_id=change.evidence_id,
+            evidence_type="derived_risk_change",
+            label=change.change_type.replace("_", " ").title(),
+            accession_number=current.accession_number,
+            source_url=None,
+            source_evidence_ids=tuple(
+                passage.evidence_id
+                for passage in (change.current, change.previous)
+                if passage is not None
+            ),
+        )
+        for change in result.changes
+    ]
+    write_document(
+        output_path,
+        record_type="risk_changes",
+        company=CompanyReference(
+            cik=current.cik,
+            ticker=current.ticker,
+            name=current.company_name,
+        ),
+        filings=(
+            FilingReference(
+                accession_number=current.accession_number,
+                form=current.form,
+                filing_date=current.filing_date,
+                report_date=current.report_date,
+                official_url=current.filing_url,
+                filing_index_url=current.filing_index_url,
+            ),
+            FilingReference(
+                accession_number=previous.accession_number,
+                form=previous.form,
+                filing_date=previous.filing_date,
+                report_date=previous.report_date,
+                official_url=previous.filing_url,
+                filing_index_url=previous.filing_index_url,
+                role="comparison",
+            ),
+        ),
+        evidence=(
+            EvidenceReference(
+                evidence_id=(
+                    f"{current.ticker}-{current.accession_number}-filing-document"
+                ),
+                evidence_type="filing_document",
+                label=f"Current {current.form}",
+                accession_number=current.accession_number,
+                source_url=current.filing_url,
+            ),
+            EvidenceReference(
+                evidence_id=(
+                    f"{previous.ticker}-{previous.accession_number}-filing-document"
+                ),
+                evidence_type="filing_document",
+                label=f"Previous {previous.form}",
+                accession_number=previous.accession_number,
+                source_url=previous.filing_url,
+            ),
+            *passage_evidence,
+            *change_evidence,
+        ),
+        payload=result,
     )
     return result, output_path

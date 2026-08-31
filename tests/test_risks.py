@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
 from sec_filing.client import FilingMetadata
 from sec_filing.risks import compare_risk_sections, extract_risk_section
+from sec_filing.schema import validate_document
 
 
 def metadata(accession: str, report_date: str, url: str) -> FilingMetadata:
@@ -58,16 +60,33 @@ class RiskComparisonTests(unittest.TestCase):
 
             current, _ = extract_risk_section(
                 current_path,
-                metadata("current-accession", "2025-09-27", "https://sec/current"),
+                metadata(
+                    "0000320193-25-000079",
+                    "2025-09-27",
+                    "https://www.sec.gov/Archives/current.htm",
+                ),
                 root / "current",
             )
             previous, _ = extract_risk_section(
                 previous_path,
-                metadata("previous-accession", "2024-09-28", "https://sec/previous"),
+                metadata(
+                    "0000320193-24-000123",
+                    "2024-09-28",
+                    "https://www.sec.gov/Archives/previous.htm",
+                ),
                 root / "previous",
             )
             result, output_path = compare_risk_sections(
                 current, previous, root / "current"
+            )
+
+            validate_document(
+                json.loads((root / "current" / "risk_factors.json").read_text()),
+                expected_record_type="risk_passages",
+            )
+            validate_document(
+                json.loads(output_path.read_text()),
+                expected_record_type="risk_changes",
             )
 
             change_types = [item.change_type for item in result.changes]
@@ -90,4 +109,3 @@ class RiskComparisonTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

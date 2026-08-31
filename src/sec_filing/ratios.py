@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
 from pathlib import Path
 
 from .client import SecError
 from .financials import FinancialExtraction, FinancialFact
+from .schema import (
+    CompanyReference,
+    EvidenceReference,
+    FilingReference,
+    write_document,
+)
 
 
 @dataclass(frozen=True)
@@ -137,11 +142,51 @@ def calculate_ratios(
         calculated_at=datetime.now(UTC).isoformat(),
         ratios=tuple(calculated),
     )
-    destination.mkdir(parents=True, exist_ok=True)
     output_path = destination / "ratios.json"
-    output_path.write_text(
-        json.dumps(asdict(result), indent=2) + "\n",
-        encoding="utf-8",
+    first_fact = financials.facts[0]
+    fact_evidence = [
+        EvidenceReference(
+            evidence_id=fact.evidence_id,
+            evidence_type="xbrl_fact",
+            label=fact.name,
+            accession_number=fact.accession_number,
+            source_url=fact.sec_concept_url,
+        )
+        for fact in financials.facts
+    ]
+    ratio_evidence = [
+        EvidenceReference(
+            evidence_id=ratio.evidence_id,
+            evidence_type="derived_ratio",
+            label=ratio.name,
+            accession_number=financials.accession_number,
+            source_url=None,
+            source_evidence_ids=(
+                ratio.numerator_evidence_id,
+                ratio.denominator_evidence_id,
+            ),
+        )
+        for ratio in result.ratios
+    ]
+    write_document(
+        output_path,
+        record_type="financial_ratios",
+        company=CompanyReference(
+            cik=financials.cik,
+            ticker=financials.ticker,
+            name=financials.company_name,
+        ),
+        filings=(
+            FilingReference(
+                accession_number=financials.accession_number,
+                form=financials.form,
+                filing_date=first_fact.filed,
+                report_date=financials.report_date,
+                official_url=first_fact.filing_url,
+                filing_index_url=first_fact.filing_index_url,
+            ),
+        ),
+        evidence=(*fact_evidence, *ratio_evidence),
+        payload=result,
     )
     return result, output_path
-

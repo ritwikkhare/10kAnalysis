@@ -144,6 +144,40 @@ self-contained page with financial cards, year-over-year tables, risk filters, s
 side passages, and clickable SEC citations. It does not require a web server or internet
 connection after generation, except when opening the evidence links.
 
+## Versioned data schema
+
+Every generated JSON file uses schema version `1.0.0` and begins with the same reusable
+envelope:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "record_type": "financial_facts",
+  "company": {
+    "cik": "0000320193",
+    "ticker": "AAPL",
+    "name": "Apple Inc."
+  },
+  "filings": [],
+  "evidence": []
+}
+```
+
+`record_type` identifies one of six supported datasets: `filing_metadata`,
+`financial_facts`, `financial_ratios`, `filing_comparison`, `risk_passages`, or
+`risk_changes`. Each filing reference uses the same accession, form, date, and SEC URL
+fields. Each evidence reference has a stable ID, evidence type, accession number, and
+either an official SEC URL or input evidence IDs for a derived result.
+
+The schema validator runs before writing a file. It rejects malformed CIKs and accession
+numbers, unsupported filing forms, duplicate IDs, non-SEC citation URLs, and conclusions
+that cite missing inputs. Existing domain fields such as `facts`, `ratios`, `changes`,
+`company_name`, and `ticker` remain present for compatibility with the current report
+and dashboard code.
+
+Previously generated local JSON files keep their earlier shape until that filing is
+processed again. Rerunning a command upgrades its output files to the current schema.
+
 You may use a different output folder:
 
 ```powershell

@@ -13,6 +13,7 @@ from .comparison import YearOverYearComparison
 from .financials import FinancialExtraction
 from .ratios import RatioExtraction
 from .risks import RiskComparison, RiskPassage
+from .schema import validate_document
 
 
 def _e(value: object) -> str:
@@ -40,10 +41,22 @@ def build_html_report_from_files(filing_dir: Path, output_dir: Path) -> Path:
     missing = [str(path) for path in required.values() if not path.exists()]
     if missing:
         raise FileNotFoundError("Missing report input files: " + ", ".join(missing))
-    values = {
-        name: _objectify(json.loads(path.read_text(encoding="utf-8")))
-        for name, path in required.items()
+    record_types = {
+        "metadata": "filing_metadata",
+        "financials": "financial_facts",
+        "ratios": "financial_ratios",
+        "comparison": "filing_comparison",
+        "risks": "risk_changes",
     }
+    values = {}
+    for name, path in required.items():
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if "schema_version" in document:
+            validate_document(
+                document,
+                expected_record_type=record_types[name],
+            )
+        values[name] = _objectify(document)
     return build_html_report(
         values["metadata"],
         values["financials"],

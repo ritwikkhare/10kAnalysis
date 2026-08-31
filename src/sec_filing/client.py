@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -11,6 +11,13 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from .schema import (
+    CompanyReference,
+    EvidenceReference,
+    FilingReference,
+    write_document,
+)
 
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -254,9 +261,44 @@ class SecClient:
             filing_index_url=filing_index_url,
             downloaded_at=datetime.now(UTC).isoformat(),
         )
-        metadata_path = destination / "metadata.json"
-        metadata_path.write_text(
-            json.dumps(asdict(metadata), indent=2) + "\n",
-            encoding="utf-8",
+        write_document(
+            destination / "metadata.json",
+            record_type="filing_metadata",
+            company=CompanyReference(
+                cik=metadata.cik,
+                ticker=metadata.ticker,
+                name=metadata.company_name,
+            ),
+            filings=(
+                FilingReference(
+                    accession_number=metadata.accession_number,
+                    form=metadata.form,
+                    filing_date=metadata.filing_date,
+                    report_date=metadata.report_date,
+                    official_url=metadata.official_url,
+                    filing_index_url=metadata.filing_index_url,
+                ),
+            ),
+            evidence=(
+                EvidenceReference(
+                    evidence_id=(
+                        f"{metadata.ticker}-{metadata.accession_number}-filing-document"
+                    ),
+                    evidence_type="filing_document",
+                    label=f"{metadata.company_name} {metadata.form}",
+                    accession_number=metadata.accession_number,
+                    source_url=metadata.official_url,
+                ),
+                EvidenceReference(
+                    evidence_id=(
+                        f"{metadata.ticker}-{metadata.accession_number}-filing-index"
+                    ),
+                    evidence_type="filing_index",
+                    label="SEC filing index",
+                    accession_number=metadata.accession_number,
+                    source_url=metadata.filing_index_url,
+                ),
+            ),
+            payload=metadata,
         )
         return metadata, html_path

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
 from pathlib import Path
 from typing import Any, Protocol
 
 from .client import FilingMetadata, SecError
+from .schema import (
+    CompanyReference,
+    EvidenceReference,
+    FilingReference,
+    write_document,
+)
 
 
 COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
@@ -217,10 +222,35 @@ def extract_financials(
         source_api_url=source_api_url,
         facts=tuple(extracted),
     )
-    destination.mkdir(parents=True, exist_ok=True)
     output_path = destination / "financials.json"
-    output_path.write_text(
-        json.dumps(asdict(result), indent=2) + "\n",
-        encoding="utf-8",
+    write_document(
+        output_path,
+        record_type="financial_facts",
+        company=CompanyReference(
+            cik=metadata.cik,
+            ticker=metadata.ticker,
+            name=metadata.company_name,
+        ),
+        filings=(
+            FilingReference(
+                accession_number=metadata.accession_number,
+                form=metadata.form,
+                filing_date=metadata.filing_date,
+                report_date=metadata.report_date,
+                official_url=metadata.official_url,
+                filing_index_url=metadata.filing_index_url,
+            ),
+        ),
+        evidence=tuple(
+            EvidenceReference(
+                evidence_id=fact.evidence_id,
+                evidence_type="xbrl_fact",
+                label=fact.name,
+                accession_number=fact.accession_number,
+                source_url=fact.sec_concept_url,
+            )
+            for fact in result.facts
+        ),
+        payload=result,
     )
     return result, output_path

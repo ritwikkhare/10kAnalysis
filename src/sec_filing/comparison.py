@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
 from pathlib import Path
 
 from .client import SecError
 from .financials import FinancialExtraction, FinancialFact
 from .ratios import FinancialRatio, RatioExtraction, RatioInput
+from .schema import (
+    CompanyReference,
+    EvidenceReference,
+    FilingReference,
+    write_document,
+)
 
 
 @dataclass(frozen=True)
@@ -197,11 +202,77 @@ def compare_years(
         calculated_at=datetime.now(UTC).isoformat(),
         changes=tuple(changes),
     )
-    destination.mkdir(parents=True, exist_ok=True)
     output_path = destination / "comparison.json"
-    output_path.write_text(
-        json.dumps(asdict(result), indent=2) + "\n",
-        encoding="utf-8",
+    all_facts = (*current_financials.facts, *previous_financials.facts)
+    fact_evidence = [
+        EvidenceReference(
+            evidence_id=fact.evidence_id,
+            evidence_type="xbrl_fact",
+            label=fact.name,
+            accession_number=fact.accession_number,
+            source_url=fact.sec_concept_url,
+        )
+        for fact in all_facts
+    ]
+    all_ratios = (*current_ratios.ratios, *previous_ratios.ratios)
+    ratio_evidence = [
+        EvidenceReference(
+            evidence_id=ratio.evidence_id,
+            evidence_type="derived_ratio",
+            label=ratio.name,
+            accession_number=ratio.input_facts[0].accession_number,
+            source_url=None,
+            source_evidence_ids=(
+                ratio.numerator_evidence_id,
+                ratio.denominator_evidence_id,
+            ),
+        )
+        for ratio in all_ratios
+    ]
+    comparison_evidence = [
+        EvidenceReference(
+            evidence_id=change.evidence_id,
+            evidence_type="derived_comparison",
+            label=change.name,
+            accession_number=current_financials.accession_number,
+            source_url=None,
+            source_evidence_ids=(
+                change.current.evidence_id,
+                change.previous.evidence_id,
+            ),
+        )
+        for change in result.changes
+    ]
+    current_first = current_financials.facts[0]
+    previous_first = previous_financials.facts[0]
+    write_document(
+        output_path,
+        record_type="filing_comparison",
+        company=CompanyReference(
+            cik=current_financials.cik,
+            ticker=current_financials.ticker,
+            name=current_financials.company_name,
+        ),
+        filings=(
+            FilingReference(
+                accession_number=current_financials.accession_number,
+                form=current_financials.form,
+                filing_date=current_first.filed,
+                report_date=current_financials.report_date,
+                official_url=current_first.filing_url,
+                filing_index_url=current_first.filing_index_url,
+            ),
+            FilingReference(
+                accession_number=previous_financials.accession_number,
+                form=previous_financials.form,
+                filing_date=previous_first.filed,
+                report_date=previous_financials.report_date,
+                official_url=previous_first.filing_url,
+                filing_index_url=previous_first.filing_index_url,
+                role="comparison",
+            ),
+        ),
+        evidence=(*fact_evidence, *ratio_evidence, *comparison_evidence),
+        payload=result,
     )
     return result, output_path
-

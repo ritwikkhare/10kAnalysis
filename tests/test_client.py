@@ -11,8 +11,9 @@ from sec_filing.cli import build_parser
 from sec_filing.comparison import compare_years
 from sec_filing.financials import extract_financials
 from sec_filing.ratios import calculate_ratios
-from sec_filing.report import build_html_report
+from sec_filing.report import build_html_report, build_html_report_from_files
 from sec_filing.risks import compare_risk_sections, extract_risk_section
+from sec_filing.schema import SCHEMA_VERSION, validate_document
 
 
 TICKERS = {
@@ -274,6 +275,9 @@ class SecClientTests(unittest.TestCase):
             self.assertEqual(html_path.read_bytes(), b"<html><body>Apple 10-K</body></html>")
 
             saved = json.loads((html_path.parent / "metadata.json").read_text())
+            validate_document(saved, expected_record_type="filing_metadata")
+            self.assertEqual(saved["schema_version"], SCHEMA_VERSION)
+            self.assertEqual(saved["company"]["ticker"], "AAPL")
             self.assertEqual(saved["official_url"], metadata.official_url)
             self.assertIn("000032019325000079", saved["official_url"])
 
@@ -307,6 +311,7 @@ class SecClientTests(unittest.TestCase):
             self.assertEqual(revenue.filing_url, metadata.official_url)
 
             saved = json.loads(financials_path.read_text())
+            validate_document(saved, expected_record_type="financial_facts")
             self.assertEqual(saved["source_api_url"], result.source_api_url)
             self.assertEqual(len(saved["facts"]), 5)
 
@@ -338,6 +343,7 @@ class SecClientTests(unittest.TestCase):
             )
 
             saved = json.loads(ratios_path.read_text())
+            validate_document(saved, expected_record_type="financial_ratios")
             self.assertEqual(len(saved["ratios"]), 3)
             self.assertEqual(saved["ratios"][0]["formula"], "net_income / revenue")
 
@@ -389,6 +395,7 @@ class SecClientTests(unittest.TestCase):
                 )
 
             saved = json.loads(comparison_path.read_text())
+            validate_document(saved, expected_record_type="filing_comparison")
             self.assertEqual(saved["previous_report_date"], "2024-09-28")
             self.assertEqual(len(saved["changes"]), 8)
 
@@ -429,6 +436,15 @@ class SecClientTests(unittest.TestCase):
             self.assertIn("Apple Inc. annual filing change report", report_html)
             self.assertIn("data-filter=\"materially_changed\"", report_html)
             self.assertIn("Open cited passage", report_html)
+
+            schema_report_path = build_html_report_from_files(
+                current_html.parent,
+                Path(temporary) / "schema-report",
+            )
+            self.assertIn(
+                "Apple Inc. annual filing change report",
+                schema_report_path.read_text(encoding="utf-8"),
+            )
 
 
 if __name__ == "__main__":
