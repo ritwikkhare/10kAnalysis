@@ -1,0 +1,21 @@
+{
+  "name": "filinglens-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:worker": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json && wrangler types --check",
+    "dev": "wrangler dev --local",
+    "test": "vitest run",
+    "types": "wrangler types",
+    "deploy:dry": "pnpm run build:worker && wrangler deploy build/index.js --no-bundle --dry-run"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@types/node": "^26.4.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.127.1"
+  }
+}

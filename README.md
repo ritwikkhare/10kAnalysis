@@ -221,3 +221,91 @@ handling, schema validation, saved metadata and HTML, and the SEC user-agent hea
 
 The client waits between requests and uses far fewer than the SEC's current limit of
 10 requests per second. Do not remove the user-agent requirement or request delay.
+
+## Stage 3, Step 4: local D1 API
+
+The new API is isolated in `api/`; the existing Apple dashboard remains in `site/` and
+is not changed by this step. The API uses a separate Worker name,
+`filinglens-sec-api`, and a separate D1 database name, `filinglens-sec-data`.
+
+The first migration creates normalized tables for companies, filings, financial facts,
+ratios, filing comparisons and changes, risk passages, risk comparisons and changes,
+and evidence links. Derived facts store edges to their input evidence. The database
+rejects citation URLs unless they use HTTPS on `www.sec.gov` or `data.sec.gov`.
+
+The read-only, versioned routes are:
+
+```text
+GET /api/v1/health
+GET /api/v1/tickers?q=apple
+GET /api/v1/companies/AAPL
+GET /api/v1/companies/AAPL/filings?form=10-K
+GET /api/v1/filings/<accession-number>/financials
+GET /api/v1/filings/<accession-number>/ratios
+GET /api/v1/filings/<accession-number>/comparisons
+GET /api/v1/filings/<accession-number>/risks
+GET /api/v1/evidence/<evidence-id>
+```
+
+Every successful and error response uses the `1.0.0` envelope. Financial facts and
+risk passages return direct SEC URLs. Ratios, comparisons, and risk changes return
+their input evidence IDs, and the evidence endpoint resolves those IDs to the original
+SEC citations. Any non-GET request receives `405 Method Not Allowed`.
+
+### Build and import the local pilot database
+
+Install the API development tools:
+
+```powershell
+cd api
+pnpm install
+pnpm run types
+cd ..
+```
+
+Generate deterministic seed SQL from the processed four-company pilot. The second
+input adds the existing Apple Item 1A risk comparison:
+
+```powershell
+python scripts\build_d1_seed.py `
+  --input work\stage3-live-pilot `
+  --input data\filings `
+  --output work\d1\pilot-seed.sql `
+  --manifest work\d1\pilot-manifest.json
+```
+
+Apply the migration and seed only to Wrangler's local D1 emulator:
+
+```powershell
+cd api
+pnpm exec wrangler d1 migrations apply filinglens-sec-data --local
+pnpm exec wrangler d1 execute filinglens-sec-data --local --file ..\work\d1\pilot-seed.sql
+```
+
+Run validation, Worker integration tests, and the original Python suite:
+
+```powershell
+pnpm run check
+pnpm test
+cd ..
+python -m unittest discover -s tests -v
+```
+
+The checked-in migration and importer are reproducible. The generated database, seed
+SQL, and processed filings remain local and ignored by Git because they can be rebuilt
+from the public SEC data.
+
+### Live Cloudflare API
+
+Stage 3, Step 4 was deployed after explicit approval. The public API is available at:
+
+<https://filinglens-sec-api.ritwikkhare10k.workers.dev/api/v1/health>
+
+Cloudflare D1 database `filinglens-sec-data` contains the processed AAPL, MSFT, NVDA,
+and TSLA pilot. The separate `filinglens-sec-api` Worker reads from that database. All
+nine public endpoint categories were verified after deployment against the live data.
+
+The deployment did not delete, replace, or redeploy the existing
+`filinglens-apple-sec` dashboard Worker. That dashboard remains available at:
+
+<https://filinglens-apple-sec.ritwikkhare10k.workers.dev/>
