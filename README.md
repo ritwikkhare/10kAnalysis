@@ -305,7 +305,55 @@ Cloudflare D1 database `filinglens-sec-data` contains the processed AAPL, MSFT, 
 and TSLA pilot. The separate `filinglens-sec-api` Worker reads from that database. All
 nine public endpoint categories were verified after deployment against the live data.
 
-The deployment did not delete, replace, or redeploy the existing
-`filinglens-apple-sec` dashboard Worker. That dashboard remains available at:
+The API and D1 deployment did not delete or replace the separate
+`filinglens-apple-sec` dashboard Worker. Stage 3, Step 5 subsequently upgraded that
+Worker in place, so the same public URL now serves the multi-company website:
+
+<https://filinglens-apple-sec.ritwikkhare10k.workers.dev/>
+
+## Stage 3, Step 5: multi-company website
+
+The website in `site/` now reads the versioned Cloudflare API instead of importing a
+single bundled Apple dataset. It supports the four-company pilot (`AAPL`, `MSFT`,
+`NVDA`, and `TSLA`) with:
+
+- ticker and company-name search;
+- selectable 10-K and 10-Q filing history;
+- financial facts and transparent ratio calculations;
+- year-over-year comparisons that use the API's validated fiscal-period match;
+- side-by-side Item 1A changes when a risk comparison is available;
+- direct SEC links for reported facts, ratio inputs, comparisons, and risk passages;
+- explicit loading, unavailable, empty, and unsupported-data states; and
+- responsive desktop and mobile layouts.
+
+The UI does not generate investment sentiment. Numeric direction is not labeled as
+favorable or unfavorable, and unavailable facts or comparisons are not estimated.
+
+### Run the website locally
+
+Install Node.js 22 or newer, then open PowerShell in the project folder:
+
+```powershell
+cd site
+pnpm install
+pnpm check
+pnpm dev
+```
+
+Open the local URL shown in the terminal (normally <http://localhost:3000>). Keep the
+terminal running while using the site. `pnpm check` runs ESLint, seven frontend/API-
+client tests, and a production build.
+
+The deployed API is the default data source. To test against another compatible API,
+set an override before starting the site:
+
+```powershell
+$env:NEXT_PUBLIC_API_BASE_URL = "http://127.0.0.1:8787/api/v1"
+pnpm dev
+```
+
+The override must implement schema version `1.0.0` and the Step 4 endpoint contract.
+Stage 3, Step 5 was deployed to the existing `filinglens-apple-sec` Worker on
+August 31, 2026 after explicit approval. The public website is available at:
 
 <https://filinglens-apple-sec.ritwikkhare10k.workers.dev/>
