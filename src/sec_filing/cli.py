@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sys
 
-from .client import SecClient, SecError
+from .client import SUPPORTED_FORMS, SecClient, SecError
 from .comparison import compare_years
 from .financials import extract_financials
 from .ratios import calculate_ratios
@@ -18,9 +18,16 @@ from .risks import compare_risk_sections, extract_risk_section
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sec-filing",
-        description="Download a company's latest 10-K from SEC EDGAR.",
+        description="Download a company's latest 10-K or 10-Q from SEC EDGAR.",
     )
     parser.add_argument("ticker", help="Company ticker, for example AAPL")
+    parser.add_argument(
+        "--form",
+        type=str.upper,
+        choices=SUPPORTED_FORMS,
+        default="10-K",
+        help="SEC filing form to download (default: 10-K)",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -45,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compare-previous",
         action="store_true",
-        help="Download two 10-Ks and create an evidence-linked comparison.json",
+        help="Download two annual filings and create an evidence-linked comparison.json",
     )
     parser.add_argument(
         "--compare-risks",
@@ -71,13 +78,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
+        if args.form != "10-K" and (
+            args.compare_previous or args.compare_risks or args.build_report
+        ):
+            raise SecError(
+                "10-Q downloading, financial extraction, and ratio calculation are "
+                "supported. Quarterly comparisons and risk reports arrive in Stage 3, "
+                "Step 3; use --form 10-K for comparison options for now."
+            )
         client = SecClient(args.user_agent)
         filing_count = (
             2 if args.compare_previous or args.compare_risks or args.build_report else 1
         )
-        downloads = client.download_recent_10ks(
+        downloads = client.download_recent_filings(
             args.ticker,
             args.output_dir,
+            form=args.form,
             limit=filing_count,
         )
         metadata, html_path = downloads[0]
@@ -161,7 +177,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Saved ratios: {ratios_path.resolve()}")
     if comparison_path is not None:
         previous_metadata, previous_html_path = downloads[1]
-        print(f"Downloaded previous 10-K: {previous_metadata.accession_number}")
+        print(
+            f"Downloaded previous {previous_metadata.form}: "
+            f"{previous_metadata.accession_number}"
+        )
         print(f"Saved previous HTML: {previous_html_path.resolve()}")
         print(f"Saved comparison: {comparison_path.resolve()}")
     if risk_changes_path is not None:

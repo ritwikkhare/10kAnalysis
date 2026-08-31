@@ -15,7 +15,7 @@ from .client import FilingMetadata, SecError
 
 ITEM_1A = re.compile(r"^Item\s+1A\.\s*Risk Factors$", re.IGNORECASE)
 ITEM_1B = re.compile(r"^Item\s+1B\.\s*Unresolved Staff Comments", re.IGNORECASE)
-FOOTER = re.compile(r"^Apple Inc\.\s*\|.*Form 10-K\s*\|\s*\d+$", re.IGNORECASE)
+FOOTER = re.compile(r"^.+\|.*Form 10-K\s*\|\s*\d+$", re.IGNORECASE)
 BLOCK_TAGS = {"div", "p", "li"}
 
 
@@ -308,4 +308,3 @@ def compare_risk_sections(
         encoding="utf-8",
     )
     return result, output_path
-

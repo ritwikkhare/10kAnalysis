@@ -94,10 +94,10 @@ def build_html_report(
             '<article class="metric-card">'
             f'<div class="metric-name">{_e(fact.name)}</div>'
             f'<div class="metric-value">{_e(fact.formatted_value)}</div>'
-            f'<div class="metric-period">FY ending {_e(fact.period_end)}</div>'
+            f'<div class="metric-period">Period ending {_e(fact.period_end)}</div>'
             '<div class="metric-links">'
             f'{_source_link(fact.sec_concept_url, "XBRL fact")}'
-            f'{_source_link(fact.filing_url, "10-K")}'
+            f'{_source_link(fact.filing_url, metadata.form)}'
             "</div></article>"
         )
 
@@ -162,8 +162,8 @@ def build_html_report(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Evidence-linked Apple SEC filing intelligence report">
-  <title>Apple SEC Filing Intelligence</title>
+  <meta name="description" content="Evidence-linked {_e(metadata.company_name)} SEC filing intelligence report">
+  <title>{_e(metadata.company_name)} SEC Filing Intelligence</title>
   <style>
     :root {{
       --ink: #17241e; --muted: #647069; --paper: #f3f5f1; --card: #ffffff;
@@ -248,14 +248,14 @@ def build_html_report(
   <header class="hero">
     <div class="hero-inner">
       <div class="eyebrow">SEC Filing Intelligence · Evidence-linked</div>
-      <h1>Apple annual filing change report</h1>
-      <p>A deterministic comparison of Apple’s two latest Form 10-K filings. Every displayed value and passage links to its SEC source; no investment recommendation is generated here.</p>
+      <h1>{_e(metadata.company_name)} annual filing change report</h1>
+      <p>A deterministic comparison of {_e(metadata.company_name)}’s two latest Form {_e(metadata.form)} filings. Every displayed value and passage links to its SEC source; no investment recommendation is generated here.</p>
       <div class="hero-meta">
         <span>Current FY: {_e(comparison.current_report_date)}</span>
         <span>Previous FY: {_e(comparison.previous_report_date)}</span>
         <span>CIK {_e(metadata.cik)}</span>
-        {_source_link(metadata.official_url, "Open current 10-K")}
-        {_source_link(risks.previous_filing_url, "Open previous 10-K")}
+        {_source_link(metadata.official_url, f"Open current {metadata.form}")}
+        {_source_link(risks.previous_filing_url, f"Open previous {metadata.form}")}
       </div>
     </div>
   </header>

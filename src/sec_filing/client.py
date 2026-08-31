@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
+SUPPORTED_FORMS = ("10-K", "10-Q")
 
 
 class SecError(RuntimeError):
@@ -113,10 +114,23 @@ class SecClient:
                 return int(company["cik_str"]), str(company["title"])
         raise SecError(f"Ticker {wanted!r} was not found in the SEC company list.")
 
-    def latest_10k(self, cik: int) -> dict[str, str]:
-        return self.recent_10ks(cik, limit=1)[0]
+    def latest_filing(self, cik: int, *, form: str = "10-K") -> dict[str, str]:
+        return self.recent_filings(cik, form=form, limit=1)[0]
 
-    def recent_10ks(self, cik: int, *, limit: int = 2) -> list[dict[str, str]]:
+    def recent_filings(
+        self,
+        cik: int,
+        *,
+        form: str = "10-K",
+        limit: int = 2,
+    ) -> list[dict[str, str]]:
+        normalized_form = form.strip().upper()
+        if normalized_form not in SUPPORTED_FORMS:
+            raise ValueError(
+                f"Unsupported filing form {form!r}; choose one of "
+                + ", ".join(SUPPORTED_FORMS)
+                + "."
+            )
         if limit < 1:
             raise ValueError("Filing limit must be at least one.")
         submission = self._fetch_json(SUBMISSIONS_URL.format(cik=cik))
@@ -132,8 +146,8 @@ class SecClient:
             raise SecError("SEC submissions response is missing recent filing fields.")
 
         filings: list[dict[str, str]] = []
-        for index, form in enumerate(recent["form"]):
-            if form == "10-K":
+        for index, filing_form in enumerate(recent["form"]):
+            if filing_form == normalized_form:
                 try:
                     filings.append({key: str(recent[key][index]) for key in required})
                 except IndexError as exc:
@@ -141,11 +155,30 @@ class SecClient:
                 if len(filings) == limit:
                     return filings
         if not filings:
-            raise SecError("No 10-K filing was found for this company.")
-        raise SecError(f"Only found {len(filings)} 10-K filing(s); {limit} required.")
+            raise SecError(f"No {normalized_form} filing was found for this company.")
+        raise SecError(
+            f"Only found {len(filings)} {normalized_form} filing(s); {limit} required."
+        )
+
+    def latest_10k(self, cik: int) -> dict[str, str]:
+        """Backward-compatible shortcut for the newest annual filing."""
+        return self.latest_filing(cik, form="10-K")
+
+    def recent_10ks(self, cik: int, *, limit: int = 2) -> list[dict[str, str]]:
+        """Backward-compatible shortcut for recent annual filings."""
+        return self.recent_filings(cik, form="10-K", limit=limit)
 
     def download_latest_10k(self, ticker: str, output_dir: Path) -> tuple[FilingMetadata, Path]:
-        return self.download_recent_10ks(ticker, output_dir, limit=1)[0]
+        return self.download_latest_filing(ticker, output_dir, form="10-K")
+
+    def download_latest_filing(
+        self,
+        ticker: str,
+        output_dir: Path,
+        *,
+        form: str = "10-K",
+    ) -> tuple[FilingMetadata, Path]:
+        return self.download_recent_filings(ticker, output_dir, form=form, limit=1)[0]
 
     def download_recent_10ks(
         self,
@@ -154,11 +187,27 @@ class SecClient:
         *,
         limit: int = 2,
     ) -> list[tuple[FilingMetadata, Path]]:
+        return self.download_recent_filings(
+            ticker,
+            output_dir,
+            form="10-K",
+            limit=limit,
+        )
+
+    def download_recent_filings(
+        self,
+        ticker: str,
+        output_dir: Path,
+        *,
+        form: str = "10-K",
+        limit: int = 2,
+    ) -> list[tuple[FilingMetadata, Path]]:
         normalized_ticker = ticker.strip().upper()
+        normalized_form = form.strip().upper()
         cik, company_name = self.resolve_ticker(normalized_ticker)
-        filings = self.recent_10ks(cik, limit=limit)
+        filings = self.recent_filings(cik, form=normalized_form, limit=limit)
         return [
-            self._download_10k_record(
+            self._download_filing_record(
                 normalized_ticker,
                 cik,
                 company_name,
@@ -168,7 +217,7 @@ class SecClient:
             for filing in filings
         ]
 
-    def _download_10k_record(
+    def _download_filing_record(
         self,
         normalized_ticker: str,
         cik: int,
@@ -196,7 +245,7 @@ class SecClient:
             company_name=company_name,
             ticker=normalized_ticker,
             cik=f"{cik:010d}",
-            form="10-K",
+            form=filing["form"],
             filing_date=filing["filingDate"],
             report_date=filing["reportDate"],
             accession_number=accession,
