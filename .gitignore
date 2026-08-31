@@ -1,0 +1,57 @@
+# Local Codex/tooling files
+/.agents/
+/.codex/
+/.npm-cache/
+/.pnpm-cache/
+/.pnpm-home/
+/.pnpm-store/
+/.pnpm-user/
+/2026-08-30/
+
+# Local data and generated work
+/data/
+/outputs/
+/work/
+
+# Python environments, caches, and builds
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# JavaScript dependencies, caches, and builds
+node_modules/
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+.wrangler/
+coverage/
+out/
+*.tsbuildinfo
+
+# Secrets and local-only configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Logs and operating-system/editor clutter
+*.log
+.DS_Store
+Thumbs.db
+.idea/

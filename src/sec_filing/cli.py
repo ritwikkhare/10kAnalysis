@@ -1,0 +1,182 @@
+"""Command-line interface for downloading SEC filings."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import sys
+
+from .client import SecClient, SecError
+from .comparison import compare_years
+from .financials import extract_financials
+from .ratios import calculate_ratios
+from .report import build_html_report
+from .risks import compare_risk_sections, extract_risk_section
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="sec-filing",
+        description="Download a company's latest 10-K from SEC EDGAR.",
+    )
+    parser.add_argument("ticker", help="Company ticker, for example AAPL")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("data/filings"),
+        help="Where downloaded filings are saved (default: data/filings)",
+    )
+    parser.add_argument(
+        "--user-agent",
+        default=os.environ.get("SEC_USER_AGENT"),
+        help="App name and contact email; or set SEC_USER_AGENT",
+    )
+    parser.add_argument(
+        "--extract-financials",
+        action="store_true",
+        help="Also extract headline financial facts into financials.json",
+    )
+    parser.add_argument(
+        "--calculate-ratios",
+        action="store_true",
+        help="Extract financials and calculate traceable ratios into ratios.json",
+    )
+    parser.add_argument(
+        "--compare-previous",
+        action="store_true",
+        help="Download two 10-Ks and create an evidence-linked comparison.json",
+    )
+    parser.add_argument(
+        "--compare-risks",
+        action="store_true",
+        help="Extract and compare Item 1A from the two latest 10-Ks",
+    )
+    parser.add_argument(
+        "--build-report",
+        action="store_true",
+        help="Run both comparisons and build a self-contained HTML report",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if not args.user_agent:
+        print(
+            "Missing SEC contact information. Set SEC_USER_AGENT to "
+            "'Your Name your.email@example.com' or pass --user-agent.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        client = SecClient(args.user_agent)
+        filing_count = (
+            2 if args.compare_previous or args.compare_risks or args.build_report else 1
+        )
+        downloads = client.download_recent_10ks(
+            args.ticker,
+            args.output_dir,
+            limit=filing_count,
+        )
+        metadata, html_path = downloads[0]
+        financials_path = None
+        ratios_path = None
+        comparison_path = None
+        risk_changes_path = None
+        report_path = None
+        comparison_result = None
+        risk_comparison_result = None
+        if (
+            args.extract_financials
+            or args.calculate_ratios
+            or args.compare_previous
+            or args.build_report
+        ):
+            financials, financials_path = extract_financials(
+                client.fetch_json,
+                metadata,
+                html_path.parent,
+            )
+            if args.calculate_ratios or args.compare_previous or args.build_report:
+                ratios, ratios_path = calculate_ratios(financials, html_path.parent)
+            if args.compare_previous or args.build_report:
+                previous_metadata, previous_html_path = downloads[1]
+                previous_financials, _ = extract_financials(
+                    client.fetch_json,
+                    previous_metadata,
+                    previous_html_path.parent,
+                )
+                previous_ratios, _ = calculate_ratios(
+                    previous_financials,
+                    previous_html_path.parent,
+                )
+                comparison_result, comparison_path = compare_years(
+                    financials,
+                    previous_financials,
+                    ratios,
+                    previous_ratios,
+                    html_path.parent,
+                )
+        if args.compare_risks or args.build_report:
+            previous_metadata, previous_html_path = downloads[1]
+            current_risks, _ = extract_risk_section(
+                html_path, metadata, html_path.parent
+            )
+            previous_risks, _ = extract_risk_section(
+                previous_html_path,
+                previous_metadata,
+                previous_html_path.parent,
+            )
+            risk_comparison_result, risk_changes_path = compare_risk_sections(
+                current_risks,
+                previous_risks,
+                html_path.parent,
+            )
+        if args.build_report:
+            if comparison_result is None or risk_comparison_result is None:
+                raise SecError("Report inputs were not generated.")
+            report_path = build_html_report(
+                metadata,
+                financials,
+                ratios,
+                comparison_result,
+                risk_comparison_result,
+                Path("outputs"),
+            )
+    except (ValueError, SecError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Downloaded {metadata.company_name} {metadata.form}")
+    print(f"Filed: {metadata.filing_date}")
+    print(f"Accession: {metadata.accession_number}")
+    print(f"Official URL: {metadata.official_url}")
+    print(f"Saved HTML: {html_path.resolve()}")
+    print(f"Saved metadata: {(html_path.parent / 'metadata.json').resolve()}")
+    if financials_path is not None:
+        print(f"Saved financials: {financials_path.resolve()}")
+    if ratios_path is not None:
+        print(f"Saved ratios: {ratios_path.resolve()}")
+    if comparison_path is not None:
+        previous_metadata, previous_html_path = downloads[1]
+        print(f"Downloaded previous 10-K: {previous_metadata.accession_number}")
+        print(f"Saved previous HTML: {previous_html_path.resolve()}")
+        print(f"Saved comparison: {comparison_path.resolve()}")
+    if risk_changes_path is not None:
+        previous_metadata, previous_html_path = downloads[1]
+        print(f"Compared Item 1A with: {previous_metadata.accession_number}")
+        print(f"Saved current risks: {(html_path.parent / 'risk_factors.json').resolve()}")
+        print(
+            "Saved previous risks: "
+            f"{(previous_html_path.parent / 'risk_factors.json').resolve()}"
+        )
+        print(f"Saved risk changes: {risk_changes_path.resolve()}")
+    if report_path is not None:
+        print(f"Saved HTML report: {report_path.resolve()}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,118 @@
+{
+  "company_name": "Apple Inc.",
+  "ticker": "AAPL",
+  "form": "10-K",
+  "report_date": "2025-09-27",
+  "accession_number": "0000320193-25-000079",
+  "calculated_at": "2026-08-30T23:14:43.050777+00:00",
+  "ratios": [
+    {
+      "evidence_id": "AAPL-0000320193-25-000079-net_margin",
+      "key": "net_margin",
+      "name": "Net margin",
+      "value": 0.269151,
+      "percentage": 26.92,
+      "formatted_value": "26.92%",
+      "formula": "net_income / revenue",
+      "calculation": "112010000000 / 416161000000",
+      "numerator_evidence_id": "AAPL-0000320193-25-000079-net_income",
+      "denominator_evidence_id": "AAPL-0000320193-25-000079-revenue",
+      "input_facts": [
+        {
+          "evidence_id": "AAPL-0000320193-25-000079-net_income",
+          "fact_key": "net_income",
+          "name": "Net income",
+          "value": 112010000000,
+          "formatted_value": "$112.01 billion",
+          "unit": "USD",
+          "accession_number": "0000320193-25-000079",
+          "filing_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm",
+          "sec_concept_url": "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/NetIncomeLoss.json"
+        },
+        {
+          "evidence_id": "AAPL-0000320193-25-000079-revenue",
+          "fact_key": "revenue",
+          "name": "Revenue",
+          "value": 416161000000,
+          "formatted_value": "$416.16 billion",
+          "unit": "USD",
+          "accession_number": "0000320193-25-000079",
+          "filing_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm",
+          "sec_concept_url": "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/RevenueFromContractWithCustomerExcludingAssessedTax.json"
+        }
+      ]
+    },
+    {
+      "evidence_id": "AAPL-0000320193-25-000079-operating_cash_flow_margin",
+      "key": "operating_cash_flow_margin",
+      "name": "Operating cash-flow margin",
+      "value": 0.267882,
+      "percentage": 26.79,
+      "formatted_value": "26.79%",
+      "formula": "operating_cash_flow / revenue",
+      "calculation": "111482000000 / 416161000000",
+      "numerator_evidence_id": "AAPL-0000320193-25-000079-operating_cash_flow",
+      "denominator_evidence_id": "AAPL-0000320193-25-000079-revenue",
+      "input_facts": [
+        {
+          "evidence_id": "AAPL-0000320193-25-000079-operating_cash_flow",
+          "fact_key": "operating_cash_flow",
+          "name": "Net cash provided by operating activities",
+          "value": 111482000000,
+          "formatted_value": "$111.48 billion",
+          "unit": "USD",
+          "accession_number": "0000320193-25-000079",
+          "filing_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm",
+          "sec_concept_url": "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/NetCashProvidedByUsedInOperatingActivities.json"
+        },
+        {
+          "evidence_id": "AAPL-0000320193-25-000079-revenue",
+          "fact_key": "revenue",
+          "name": "Revenue",
+          "value": 416161000000,
+          "formatted_value": "$416.16 billion",
+          "unit": "USD",
+          "accession_number": "0000320193-25-000079",
+          "filing_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm",
+          "sec_concept_url": "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/RevenueFromContractWithCustomerExcludingAssessedTax.json"
+        }
+      ]
+    },
+    {
+      "evidence_id": "AAPL-0000320193-25-000079-liabilities_to_assets",
+      "key": "liabilities_to_assets",
+      "name": "Liabilities-to-assets",
+      "value": 0.794753,
+      "percentage": 79.48,
+      "formatted_value": "79.48%",
+      "formula": "total_liabilities / total_assets",
+      "calculation": "285508000000 / 359241000000",
+      "numerator_evidence_id": "AAPL-0000320193-25-000079-total_liabilities",
+      "denominator_evidence_id": "AAPL-0000320193-25-000079-total_assets",
+      "input_facts": [
+        {
+          "evidence_id": "AAPL-0000320193-25-000079-total_liabilities",
+          "fact_key": "total_liabilities",
+          "name": "Total liabilities",
+          "value": 285508000000,
+          "formatted_value": "$285.51 billion",
+          "unit": "USD",
+          "accession_number": "0000320193-25-000079",
+          "filing_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm",
+          "sec_concept_url": "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/Liabilities.json"
+        },
+        {
+          "evidence_id": "AAPL-0000320193-25-000079-total_assets",
+          "fact_key": "total_assets",
+          "name": "Total assets",
+          "value": 359241000000,
+          "formatted_value": "$359.24 billion",
+          "unit": "USD",
+          "accession_number": "0000320193-25-000079",
+          "filing_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm",
+          "sec_concept_url": "https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/Assets.json"
+        }
+      ]
+    }
+  ]
+}
