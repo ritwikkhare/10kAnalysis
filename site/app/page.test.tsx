@@ -33,7 +33,16 @@ describe('multi-company dashboard', () => {
 
   beforeEach(() => {
     vi.mocked(filingLensApi.companies).mockResolvedValue(companies);
-    vi.mocked(filingLensApi.company).mockImplementation(async (ticker) => ({ ...companies.find((item) => item.ticker === ticker)!, filing_count: 1, latest_filing_date: '2026-07-31' }));
+    vi.mocked(filingLensApi.company).mockImplementation(async (ticker) => ({
+      ...companies.find((item) => item.ticker === ticker)!,
+      filing_count: 1,
+      latest_filing_date: '2026-07-31',
+      refresh_status: 'up_to_date',
+      last_checked_at: '2026-08-31T12:00:00Z',
+      last_success_at: '2026-08-31T12:00:00Z',
+      latest_refresh_accession: filings[0].accession_number,
+      refresh_message: 'Stored filings match the latest SEC submissions.',
+    }));
     vi.mocked(filingLensApi.filings).mockResolvedValue(filings);
     vi.mocked(loadFilingData).mockResolvedValue(data);
   });
@@ -44,6 +53,7 @@ describe('multi-company dashboard', () => {
     expect(await screen.findByText('$1.00B')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Inspect evidence'));
     expect(screen.getByRole('link', { name: /Revenue/ })).toHaveAttribute('href', 'https://data.sec.gov/revenue');
+    expect(screen.getByText('Up to date')).toBeInTheDocument();
   });
 
   it('searches and switches to another pilot ticker', async () => {

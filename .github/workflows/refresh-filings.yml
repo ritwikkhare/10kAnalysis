@@ -1,0 +1,98 @@
+name: Refresh SEC filings
+
+# Intentionally manual-only for Stage 3, Step 6 local verification.
+# A recurring schedule must not be added until deployment approval is given.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: filinglens-production-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+    steps:
+      - name: Check out validated source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: "10"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install the filing processor
+        run: python -m pip install -e .
+
+      - name: Install the Cloudflare API tools
+        run: pnpm --dir api install --frozen-lockfile
+
+      - name: Verify pipeline and API tests
+        run: |
+          python -m unittest discover -s tests -v
+          pnpm --dir api test
+          pnpm --dir api check
+
+      - name: Read immutable accessions already stored in D1
+        run: |
+          mkdir -p work/refresh
+          pnpm --dir api exec wrangler d1 execute filinglens-sec-data --remote --json \
+            --command "SELECT accession_number FROM filings ORDER BY accession_number" \
+            > work/refresh/known-accessions.json
+
+      - name: Process only newly published SEC filings
+        run: |
+          python scripts/refresh_filings.py \
+            --known-accessions work/refresh/known-accessions.json \
+            --output-dir work/refresh/processed \
+            --sql-output work/refresh/import.sql \
+            --manifest work/refresh/manifest.json \
+            --trigger-type manual
+
+      - name: Apply status schema and validated idempotent import
+        run: |
+          pnpm --dir api exec wrangler d1 migrations apply filinglens-sec-data --remote
+          pnpm --dir api exec wrangler d1 execute filinglens-sec-data --remote \
+            --file ../work/refresh/import.sql
+
+      - name: Preserve a diagnostic manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: filing-refresh-manifest
+          path: work/refresh/manifest.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Fail visibly after recording partial failures
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("work/refresh/manifest.json").read_text())
+          if manifest["status"] != "succeeded":
+              raise SystemExit(
+                  f"Refresh finished with {manifest['status']}: "
+                  f"{manifest['error_summary']}"
+              )
+          PY

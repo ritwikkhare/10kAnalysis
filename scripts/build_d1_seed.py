@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 SCHEMA_VERSION = "1.0.0"
 ACCESSION = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+PILOT_TICKERS = frozenset({"AAPL", "MSFT", "NVDA", "TSLA"})
 
 
 def sec_url(value: str | None) -> str | None:
@@ -133,7 +134,11 @@ def filing_from_reference(reference: dict[str, Any], company: dict[str, Any], me
     }
 
 
-def collect(documents: list[tuple[Path, dict[str, Any]]]) -> SeedData:
+def collect(
+    documents: list[tuple[Path, dict[str, Any]]],
+    *,
+    required_tickers: frozenset[str] | set[str] | None = PILOT_TICKERS,
+) -> SeedData:
     data = SeedData()
     metadata = index_metadata(documents)
 
@@ -196,7 +201,7 @@ def collect(documents: list[tuple[Path, dict[str, Any]]]) -> SeedData:
         if record_type == "risk_changes" or (document.get("changes") and document.get("methodology")):
             collect_risk_changes(data, document)
 
-    validate_graph(data)
+    validate_graph(data, required_tickers=required_tickers)
     return data
 
 
@@ -290,9 +295,16 @@ def collect_risk_changes(data: SeedData, document: dict[str, Any]) -> None:
             data.add_evidence(evidence_id, "derived_risk_change", str(change["change_type"]).replace("_", " ").title(), current, None, source_ids)
 
 
-def validate_graph(data: SeedData) -> None:
-    if set(data.companies) != {"AAPL", "MSFT", "NVDA", "TSLA"}:
-        raise ValueError(f"Pilot must contain AAPL, MSFT, NVDA, and TSLA; found {sorted(data.companies)}")
+def validate_graph(
+    data: SeedData,
+    *,
+    required_tickers: frozenset[str] | set[str] | None = PILOT_TICKERS,
+) -> None:
+    if required_tickers is not None and set(data.companies) != set(required_tickers):
+        raise ValueError(
+            f"Expected companies {sorted(required_tickers)}; "
+            f"found {sorted(data.companies)}"
+        )
     for filing in data.filings.values():
         for field in ("form", "filing_date", "report_date", "official_url", "filing_index_url"):
             if not filing.get(field):

@@ -2,7 +2,18 @@ export const DEFAULT_API_BASE =
   'https://filinglens-sec-api.ritwikkhare10k.workers.dev/api/v1';
 
 export type ApiEnvelope<T> = { schema_version: '1.0.0'; data: T; meta: Record<string, unknown> };
-export type Company = { ticker: string; cik: string; name: string; filing_count?: number; latest_filing_date?: string };
+export type Company = {
+  ticker: string;
+  cik: string;
+  name: string;
+  filing_count?: number;
+  latest_filing_date?: string;
+  refresh_status?: 'up_to_date' | 'imported' | 'failed' | null;
+  last_checked_at?: string | null;
+  last_success_at?: string | null;
+  latest_refresh_accession?: string | null;
+  refresh_message?: string | null;
+};
 export type Filing = { accession_number: string; form: '10-K' | '10-Q'; filing_date: string; report_date: string; primary_document: string | null; official_url: string; filing_index_url: string };
 export type Evidence = { evidence_id: string; evidence_type: string; label: string; accession_number: string; source_url: string | null; source_evidence_ids: string[] };
 export type Fact = { key: string; name: string; value: number; formatted_value: string; unit: string; taxonomy: string; concept: string; sec_label: string; period_type: 'instant' | 'duration'; period_start: string | null; period_end: string; fiscal_year: number | null; fiscal_period: string | null; filed: string; sec_concept_url: string; evidence_id: string };
