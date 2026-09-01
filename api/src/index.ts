@@ -27,12 +27,33 @@ async function companyDetails(tickerValue: string, env: Env): Promise<Response> 
     env.DB,
     `SELECT c.ticker, c.cik, c.name,
       COUNT(f.accession_number) AS filing_count,
-      MAX(f.filing_date) AS latest_filing_date
-      FROM companies c LEFT JOIN filings f ON f.company_id = c.id
+      MAX(f.filing_date) AS latest_filing_date,
+      s.status AS refresh_status, s.last_checked_at, s.last_success_at,
+      s.latest_accession AS latest_refresh_accession, s.message AS refresh_message
+      FROM companies c
+      LEFT JOIN filings f ON f.company_id = c.id
+      LEFT JOIN company_refresh_status s ON s.company_id = c.id
       WHERE c.ticker = ? GROUP BY c.id`,
     [ticker],
   );
   return company ? json(company) : apiError(404, "COMPANY_NOT_FOUND", `No pilot company found for ${ticker}.`);
+}
+
+async function refreshStatus(env: Env): Promise<Response> {
+  const run = await first(
+    env.DB,
+    `SELECT run_id, trigger_type, status, started_at, completed_at,
+      companies_checked, filings_discovered, filings_imported, error_count,
+      error_summary FROM refresh_runs ORDER BY started_at DESC LIMIT 1`,
+  );
+  const companies = await all(
+    env.DB,
+    `SELECT c.ticker, s.status, s.last_checked_at, s.last_success_at,
+      s.latest_accession, s.message
+      FROM companies c LEFT JOIN company_refresh_status s ON s.company_id = c.id
+      ORDER BY c.ticker`,
+  );
+  return json({ run, companies });
 }
 
 async function filingHistory(request: Request, tickerValue: string, env: Env): Promise<Response> {
@@ -166,6 +187,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const parts = route(new URL(request.url).pathname);
   if (parts[0] !== "api" || parts[1] !== "v1") return apiError(404, "NOT_FOUND", "Use an /api/v1 endpoint.");
   if (parts.length === 3 && parts[2] === "health") return json({ status: "ok", storage: "d1" });
+  if (parts.length === 3 && parts[2] === "refresh-status") return refreshStatus(env);
   if (parts.length === 3 && parts[2] === "tickers") return tickerSearch(request, env);
   if (parts.length === 4 && parts[2] === "companies") return companyDetails(parts[3], env);
   if (parts.length === 5 && parts[2] === "companies" && parts[4] === "filings") return filingHistory(request, parts[3], env);
@@ -182,7 +204,14 @@ export default {
     try {
       return await handle(request, env);
     } catch (error) {
-      console.error("request_failed", { method: request.method, path: new URL(request.url).pathname, error });
+      console.error(
+        JSON.stringify({
+          message: "request_failed",
+          method: request.method,
+          path: new URL(request.url).pathname,
+          error: error instanceof Error ? error.message : "unknown_error",
+        }),
+      );
       return apiError(500, "INTERNAL_ERROR", "The API could not complete this request.");
     }
   },
