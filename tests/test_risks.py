@@ -88,6 +88,24 @@ class RiskComparisonTests(unittest.TestCase):
                 json.loads(output_path.read_text()),
                 expected_record_type="risk_changes",
             )
+            risk_changes_document = json.loads(output_path.read_text())
+            filing_evidence = {
+                item["evidence_id"]: item
+                for item in risk_changes_document["evidence"]
+                if item["evidence_type"] == "filing_document"
+            }
+            self.assertEqual(
+                filing_evidence[
+                    "AAPL-0000320193-25-000079-filing-document"
+                ]["label"],
+                "Apple Inc. 10-K",
+            )
+            self.assertEqual(
+                filing_evidence[
+                    "AAPL-0000320193-24-000123-filing-document"
+                ]["label"],
+                "Apple Inc. 10-K",
+            )
 
             change_types = [item.change_type for item in result.changes]
             self.assertEqual(change_types.count("materially_changed"), 1)
