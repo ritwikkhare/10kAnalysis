@@ -357,3 +357,81 @@ Stage 3, Step 5 was deployed to the existing `filinglens-apple-sec` Worker on
 August 31, 2026 after explicit approval. The public website is available at:
 
 <https://filinglens-apple-sec.ritwikkhare10k.workers.dev/>
+
+## Stage 3, Step 6: automated filing refresh
+
+Step 6 adds a safe refresh pipeline without enabling it in production yet. The
+pipeline checks Apple, Microsoft, NVIDIA, and Tesla for their latest 10-K and 10-Q,
+compares the immutable SEC accession numbers with the filings already in D1, and
+processes only filings that are not already stored.
+
+For each new filing, the existing Python pipeline downloads the official filing,
+extracts facts, calculates ratios, selects the valid prior-year fiscal quarter for a
+10-Q comparison, and compares Item 1A passages for a 10-K. Every generated document
+must pass the versioned schema and evidence-reference validation before SQL is
+created. The importer uses stable primary keys and `INSERT OR IGNORE`, so rerunning
+the same refresh cannot duplicate a filing or erase existing data.
+
+The new D1 migration adds three operational tables:
+
+- `refresh_runs` records each refresh attempt and its aggregate result;
+- `company_refresh_status` records the last check, last success, most recent
+  accession, and safe status message for each company; and
+- `refresh_failures` records the ticker, form, stage, and diagnostic message for a
+  failed target without publishing unvalidated filing data.
+
+After the API and website changes are eventually deployed, company responses and the
+dashboard can show `Up to date`, `Updated`, `Update issue`, or `Never checked`, plus
+the last checked time. A read-only `GET /api/v1/refresh-status` endpoint also exposes
+the latest run and all company statuses in the standard `1.0.0` API envelope.
+
+### Test Step 6 locally
+
+No SEC request is needed for the automated tests. From the project folder, run:
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+cd api
+pnpm test
+pnpm run check
+cd ..\site
+pnpm check
+cd ..
+```
+
+The refresh-specific tests verify accession-number deduplication, schema rejection,
+failure recording, idempotent status updates, and compatibility with both D1
+migrations. The API tests verify the new status fields and endpoint, while the UI
+tests verify that freshness is displayed to users.
+
+To perform an optional one-time local SEC check, use an honest contact address in the
+SEC user agent and a Wrangler JSON export containing the accessions to skip:
+
+```powershell
+$env:SEC_USER_AGENT = "FilingLens your-email@example.com"
+.venv\Scripts\python.exe scripts\refresh_filings.py `
+  --known-accessions work\refresh\known-accessions.json `
+  --output-dir work\refresh\processed `
+  --sql-output work\refresh\import.sql `
+  --manifest work\refresh\manifest.json `
+  --trigger-type manual
+```
+
+This writes processed data, idempotent import SQL, and a diagnostic manifest under
+the ignored `work/` directory. It does not update remote D1 by itself.
+
+### Production deployment and refresh activation
+
+`.github/workflows/refresh-filings.yml` is checked in as a manual-only workflow. It
+has **no `schedule` event**, and no Cloudflare recurring trigger has been added. It
+will require these GitHub Actions secrets before a manually approved production run:
+
+- `CLOUDFLARE_API_TOKEN`, limited to the required D1 account/database permissions;
+- `CLOUDFLARE_ACCOUNT_ID`; and
+- `SEC_USER_AGENT`, containing the project name and a real contact email address.
+
+The additive D1 migration, read-only API, and website status UI were deployed and
+verified on September 1, 2026 after explicit approval. The deployment preserved all
+existing pilot filings. The refresh workflow itself remains manual-only: configure
+the three GitHub Actions secrets above, run and inspect one manual refresh, and only
+then add a recurring schedule after separate explicit approval.
