@@ -402,7 +402,11 @@ def compare_risk_sections(
                     f"{current.ticker}-{current.accession_number}-filing-document"
                 ),
                 evidence_type="filing_document",
-                label=f"Current {current.form}",
+                # Filing-document evidence is shared across metadata, financial,
+                # and risk documents. Keep its definition canonical so merging
+                # independently generated schema files cannot create a false
+                # evidence collision.
+                label=f"{current.company_name} {current.form}",
                 accession_number=current.accession_number,
                 source_url=current.filing_url,
             ),
@@ -411,7 +415,7 @@ def compare_risk_sections(
                     f"{previous.ticker}-{previous.accession_number}-filing-document"
                 ),
                 evidence_type="filing_document",
-                label=f"Previous {previous.form}",
+                label=f"{previous.company_name} {previous.form}",
                 accession_number=previous.accession_number,
                 source_url=previous.filing_url,
             ),
