@@ -1,6 +1,7 @@
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import migrationSql from "../migrations/0001_initial.sql?raw";
+import refreshMigrationSql from "../migrations/0002_refresh_status.sql?raw";
 import { evidenceFor } from "../src/db.js";
 
 const CURRENT = "0000000001-26-000001";
@@ -17,12 +18,24 @@ const migrationQueries = migrationSql
   .split(";")
   .map((query) => query.trim())
   .filter(Boolean);
+const refreshMigrationQueries = refreshMigrationSql
+  .split(";")
+  .map((query) => query.trim())
+  .filter(Boolean);
 
 async function seed(): Promise<void> {
   await env.DB.batch([
     env.DB.prepare("INSERT INTO companies (schema_version, cik, ticker, name) VALUES (?, ?, ?, ?)").bind("1.0.0", "0000000001", "TEST", "Test Corporation"),
     env.DB.prepare("INSERT INTO filings (accession_number, company_id, schema_version, form, filing_date, report_date, official_url, filing_index_url) SELECT ?, id, ?, ?, ?, ?, ?, ? FROM companies WHERE ticker = ?").bind(CURRENT, "1.0.0", "10-K", "2026-02-01", "2025-12-31", "https://www.sec.gov/Archives/test-current.htm", "https://www.sec.gov/Archives/test-current-index.html", "TEST"),
     env.DB.prepare("INSERT INTO filings (accession_number, company_id, schema_version, form, filing_date, report_date, official_url, filing_index_url) SELECT ?, id, ?, ?, ?, ?, ?, ? FROM companies WHERE ticker = ?").bind(PREVIOUS, "1.0.0", "10-K", "2025-02-01", "2024-12-31", "https://www.sec.gov/Archives/test-previous.htm", "https://www.sec.gov/Archives/test-previous-index.html", "TEST"),
+  ]);
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO refresh_runs (run_id, trigger_type, status, started_at, completed_at, companies_checked, filings_discovered, filings_imported, error_count) VALUES (?, 'test', 'succeeded', ?, ?, 1, 1, 1, 0)",
+    ).bind("test-refresh-run", "2026-08-31T12:00:00Z", "2026-08-31T12:01:00Z"),
+    env.DB.prepare(
+      "INSERT INTO company_refresh_status (company_id, run_id, status, last_checked_at, last_success_at, latest_accession, message) SELECT id, ?, 'imported', ?, ?, ?, 'Imported one new filing.' FROM companies WHERE ticker = 'TEST'",
+    ).bind("test-refresh-run", "2026-08-31T12:01:00Z", "2026-08-31T12:01:00Z", CURRENT),
   ]);
   const evidence = [
     [FACT, "xbrl_fact", "Revenue", CURRENT, "https://data.sec.gov/api/xbrl/current.json"],
@@ -65,12 +78,16 @@ function expectEnvelope(body: any): void {
 
 describe("read-only SEC intelligence API", () => {
   beforeAll(async () => {
-    await applyD1Migrations(env.DB, [{ name: "0001_initial.sql", queries: migrationQueries }]);
+    await applyD1Migrations(env.DB, [
+      { name: "0001_initial.sql", queries: migrationQueries },
+      { name: "0002_refresh_status.sql", queries: refreshMigrationQueries },
+    ]);
     await seed();
   });
 
   it.each([
     "/api/v1/health",
+    "/api/v1/refresh-status",
     "/api/v1/tickers?q=tes",
     "/api/v1/companies/TEST",
     "/api/v1/companies/TEST/filings?form=10-K",
@@ -88,6 +105,17 @@ describe("read-only SEC intelligence API", () => {
   it("keeps SEC evidence clickable", async () => {
     const { body } = await get(`/api/v1/filings/${CURRENT}/financials`);
     expect(body.data.evidence[0].source_url).toMatch(/^https:\/\/(www|data)\.sec\.gov\//);
+  });
+
+  it("reports refresh freshness without exposing failure internals", async () => {
+    const { body } = await get("/api/v1/refresh-status");
+    expect(body.data.run.status).toBe("succeeded");
+    expect(body.data.companies[0]).toMatchObject({
+      ticker: "TEST",
+      status: "imported",
+      latest_accession: CURRENT,
+    });
+    expect(JSON.stringify(body)).not.toContain("stack");
   });
 
   it("loads production-sized evidence sets in safe D1 batches", async () => {
