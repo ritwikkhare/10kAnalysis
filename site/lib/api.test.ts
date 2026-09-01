@@ -18,6 +18,20 @@ describe('FilingLens API client', () => {
     expect(fetchMock).toHaveBeenCalledWith(`${DEFAULT_API_BASE}/tickers?q=`, expect.objectContaining({ headers: { accept: 'application/json' } }));
   });
 
+  it('searches the complete SEC directory with an encoded query', async () => {
+    const result = [{
+      ticker: 'GOOG', cik: '0001652044', name: 'Alphabet Inc.',
+      is_processed: false, availability: 'requires_analysis', filing_count: 0,
+    }];
+    const fetchMock = vi.fn().mockResolvedValue(reply(result));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(filingLensApi.searchTickers('alpha bet')).resolves.toEqual(result);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DEFAULT_API_BASE}/tickers?q=alpha%20bet&limit=10`,
+      expect.objectContaining({ headers: { accept: 'application/json' } }),
+    );
+  });
+
   it('loads all four evidence-bearing filing datasets together', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => reply({ accession_number: '0000320193-26-000020', evidence: [], facts: [], ratios: [], comparisons: [], risks: [] }));
     vi.stubGlobal('fetch', fetchMock);
@@ -31,9 +45,27 @@ describe('FilingLens API client', () => {
     ]));
   });
 
+  it('submits and polls an asynchronous analysis job without blocking the data client', async () => {
+    const job = {
+      job_id: '11111111-1111-4111-8111-111111111111', ticker: 'AMZN', cik: '0001018724',
+      company_name: 'Amazon.com, Inc.', status: 'queued', attempt_count: 0, max_attempts: 3,
+      requested_at: '2026-08-31T12:00:00Z', started_at: null, completed_at: null,
+      updated_at: '2026-08-31T12:00:00Z', message: 'Queued.', error_code: null, can_retry: false,
+    } as const;
+    const fetchMock = vi.fn().mockResolvedValue(reply(job, 202)).mockResolvedValueOnce(reply(job, 202));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(filingLensApi.requestAnalysis('AMZN', 'one-time-token')).resolves.toEqual(job);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, `${DEFAULT_API_BASE}/companies/AMZN/analysis`, expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ turnstile_token: 'one-time-token' }),
+    }));
+    await expect(filingLensApi.analysisStatus(job.job_id)).resolves.toEqual(job);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, `${DEFAULT_API_BASE}/analysis-jobs/${job.job_id}`, expect.objectContaining({ cache: 'no-store' }));
+  });
+
   it('surfaces API errors and rejects an unknown schema', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(reply({ error: { message: 'No filing' } }, 404)).mockResolvedValueOnce(reply([], 200, '2.0.0')));
-    await expect(filingLensApi.filings('NONE')).rejects.toEqual(expect.objectContaining({ name: 'ApiError', message: 'No filing', status: 404 }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(reply({ error: { code: 'FILING_NOT_FOUND', message: 'No filing' } }, 404)).mockResolvedValueOnce(reply([], 200, '2.0.0')));
+    await expect(filingLensApi.filings('NONE')).rejects.toEqual(expect.objectContaining({ name: 'ApiError', message: 'No filing', status: 404, code: 'FILING_NOT_FOUND' }));
     await expect(filingLensApi.companies()).rejects.toThrow('unsupported schema');
   });
 

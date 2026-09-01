@@ -41,8 +41,11 @@ out/
 # Secrets and local-only configuration
 .env
 .env.*
+.dev.vars
+.dev.vars.*
 !.env.example
 !.env.sample
+!.dev.vars.example
 *.pem
 *.key
 *.p12

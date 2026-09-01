@@ -6,6 +6,8 @@ export type Company = {
   ticker: string;
   cik: string;
   name: string;
+  is_processed?: boolean;
+  availability?: 'available' | 'requires_analysis';
   filing_count?: number;
   latest_filing_date?: string;
   refresh_status?: 'up_to_date' | 'imported' | 'failed' | null;
@@ -30,9 +32,26 @@ export type FilingData = {
   comparisons: LinkedCollection<{ comparisons: Comparison[] }>;
   risks: LinkedCollection<{ risks: Array<{ passages: RiskPassage[]; comparisons: RiskComparison[] }> }>;
 };
+export type AnalysisJobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'unsupported';
+export type AnalysisJob = {
+  job_id: string;
+  ticker: string;
+  cik: string;
+  company_name: string;
+  status: AnalysisJobStatus;
+  attempt_count: number;
+  max_attempts: number;
+  requested_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+  message: string;
+  error_code: string | null;
+  can_retry: boolean;
+};
 
 export class ApiError extends Error {
-  constructor(message: string, public readonly status?: number) {
+  constructor(message: string, public readonly status?: number, public readonly code?: string) {
     super(message);
     this.name = 'ApiError';
   }
@@ -42,10 +61,14 @@ function apiBase(): string {
   return (process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE).replace(/\/$/, '');
 }
 
-async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
+async function request<T>(path: string, signal?: AbortSignal, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${apiBase()}${path}`, { headers: { accept: 'application/json' }, signal });
+    response = await fetch(`${apiBase()}${path}`, {
+      ...init,
+      headers: { accept: 'application/json', ...init.headers },
+      signal,
+    });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiError('The FilingLens data service is unavailable. Check your connection and try again.');
@@ -57,8 +80,8 @@ async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
     throw new ApiError('The data service returned an unreadable response.', response.status);
   }
   if (!response.ok) {
-    const payload = envelope.data as { error?: { message?: string } };
-    throw new ApiError(payload?.error?.message ?? `Request failed with status ${response.status}.`, response.status);
+    const payload = envelope.data as { error?: { code?: string; message?: string } };
+    throw new ApiError(payload?.error?.message ?? `Request failed with status ${response.status}.`, response.status, payload?.error?.code);
   }
   if (envelope.schema_version !== '1.0.0' || !('data' in envelope)) {
     throw new ApiError('The data service returned an unsupported schema.');
@@ -68,12 +91,28 @@ async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
 
 export const filingLensApi = {
   companies: (signal?: AbortSignal) => request<Company[]>('/tickers?q=', signal),
+  searchTickers: (query: string, signal?: AbortSignal) =>
+    request<Company[]>(`/tickers?q=${encodeURIComponent(query)}&limit=10`, signal),
   company: (ticker: string, signal?: AbortSignal) => request<Company>(`/companies/${encodeURIComponent(ticker)}`, signal),
   filings: (ticker: string, signal?: AbortSignal) => request<Filing[]>(`/companies/${encodeURIComponent(ticker)}/filings`, signal),
   financials: (accession: string, signal?: AbortSignal) => request<LinkedCollection<{ facts: Fact[] }>>(`/filings/${encodeURIComponent(accession)}/financials`, signal),
   ratios: (accession: string, signal?: AbortSignal) => request<LinkedCollection<{ ratios: Ratio[] }>>(`/filings/${encodeURIComponent(accession)}/ratios`, signal),
   comparisons: (accession: string, signal?: AbortSignal) => request<LinkedCollection<{ comparisons: Comparison[] }>>(`/filings/${encodeURIComponent(accession)}/comparisons`, signal),
   risks: (accession: string, signal?: AbortSignal) => request<LinkedCollection<{ risks: Array<{ passages: RiskPassage[]; comparisons: RiskComparison[] }> }>>(`/filings/${encodeURIComponent(accession)}/risks`, signal),
+  requestAnalysis: (ticker: string, turnstileToken: string, signal?: AbortSignal) =>
+    request<AnalysisJob>(`/companies/${encodeURIComponent(ticker)}/analysis`, signal, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ turnstile_token: turnstileToken }),
+    }),
+  analysisStatus: (jobId: string, signal?: AbortSignal) =>
+    request<AnalysisJob>(`/analysis-jobs/${encodeURIComponent(jobId)}`, signal, { cache: 'no-store' }),
+  retryAnalysis: (jobId: string, turnstileToken: string, signal?: AbortSignal) =>
+    request<AnalysisJob>(`/analysis-jobs/${encodeURIComponent(jobId)}/retry`, signal, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ turnstile_token: turnstileToken }),
+    }),
 };
 
 export async function loadFilingData(accession: string, signal?: AbortSignal): Promise<FilingData> {

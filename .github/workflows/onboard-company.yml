@@ -1,0 +1,92 @@
+name: Analyze requested SEC company
+
+# Stage 3 Step 7B is intentionally not active in production yet. This event is
+# inert until the API Queue binding, Worker secrets, migration, and feature flag
+# are deployed after explicit approval.
+on:
+  repository_dispatch:
+    types: [filinglens_onboard_company]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: filinglens-onboarding-${{ github.event.client_payload.ticker }}
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      JOB_ID: ${{ github.event.client_payload.job_id }}
+      TICKER: ${{ github.event.client_payload.ticker }}
+      CIK: ${{ github.event.client_payload.cik }}
+    steps:
+      - name: Check out validated source
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: "10"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install the filing processor and Cloudflare tools
+        run: |
+          python -m pip install -e .
+          pnpm --dir api install --frozen-lockfile
+
+      - name: Read immutable accessions already stored in D1
+        run: |
+          mkdir -p work/onboarding
+          pnpm --dir api exec wrangler d1 execute filinglens-sec-data --remote --json \
+            --command "SELECT accession_number FROM filings ORDER BY accession_number" \
+            > work/onboarding/known-accessions.json
+
+      - name: Process and validate the requested company
+        id: process
+        continue-on-error: true
+        run: |
+          python -m scripts.onboard_company \
+            --job-id "$JOB_ID" \
+            --ticker "$TICKER" \
+            --cik "$CIK" \
+            --known-accessions work/onboarding/known-accessions.json \
+            --output-dir work/onboarding/processed \
+            --sql-output work/onboarding/import.sql \
+            --manifest work/onboarding/manifest.json \
+            --user-agent "$SEC_USER_AGENT"
+
+      - name: Apply the job schema and validation-gated idempotent import
+        if: always() && hashFiles('work/onboarding/import.sql') != ''
+        run: |
+          pnpm --dir api exec wrangler d1 migrations apply filinglens-sec-data --remote
+          pnpm --dir api exec wrangler d1 execute filinglens-sec-data --remote \
+            --file ../work/onboarding/import.sql
+
+      - name: Preserve diagnostic manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: filinglens-onboarding-${{ github.run_id }}
+          path: work/onboarding/manifest.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail visibly after safely recording the job state
+        if: steps.process.outcome != 'success'
+        run: exit 1

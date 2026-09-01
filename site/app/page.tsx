@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ApiError, type Company, type Comparison, type Evidence, type Fact, type Filing,
+  ApiError, type AnalysisJob, type Company, type Comparison, type Evidence, type Fact, type Filing,
   type FilingData, type Ratio, type RiskChange, type RiskComparison, type RiskPassage,
   directEvidence, filingLensApi, loadFilingData,
 } from '../lib/api';
+import { TurnstileWidget } from './TurnstileWidget';
 
 type View = 'overview' | 'ratios' | 'comparison' | 'risks';
 type RiskFilter = 'all' | RiskChange['change_type'];
@@ -108,6 +109,15 @@ export default function Home() {
   const [previousData, setPreviousData] = useState<FilingData | null>(null);
   const [view, setView] = useState<View>('overview');
   const [search, setSearch] = useState('');
+  const [searchResults, setSearchResults] = useState<Company[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [discoveredCompany, setDiscoveredCompany] = useState<Company | null>(null);
+  const [analysisJob, setAnalysisJob] = useState<AnalysisJob | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [analysisSubmitting, setAnalysisSubmitting] = useState(false);
+  const [challengeToken, setChallengeToken] = useState('');
+  const [challengeReset, setChallengeReset] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
@@ -115,11 +125,17 @@ export default function Home() {
   const comparison = data?.comparisons.comparisons.find((item) => item.current_accession === accession) ?? null;
   const riskBundle = data?.risks.risks[0];
   const riskComparison = riskBundle?.comparisons.find((item) => item.current_accession === accession) ?? null;
-  const visibleCompanies = companies.filter((item) => `${item.ticker} ${item.name}`.toLowerCase().includes(search.toLowerCase()));
   const chooseTicker = useCallback((nextTicker: string) => {
     setLoading(true); setError(null); setData(null); setPreviousData(null);
-    setTicker(nextTicker); setSearch(''); setView('overview'); setAccession('');
+    setTicker(nextTicker); setSearch(''); setSearchResults([]); setDiscoveredCompany(null); setView('overview'); setAccession('');
   }, []);
+  const chooseSearchResult = useCallback((item: Company) => {
+    if (item.availability === 'requires_analysis') {
+      setDiscoveredCompany(item); setAnalysisJob(null); setAnalysisError(null); setChallengeToken(''); setSearch(''); setSearchResults([]);
+      return;
+    }
+    chooseTicker(item.ticker);
+  }, [chooseTicker]);
   const chooseAccession = useCallback((nextAccession: string) => {
     setLoading(true); setError(null); setPreviousData(null);
     setAccession(nextAccession); setView('overview');
@@ -128,12 +144,49 @@ export default function Home() {
     setLoading(true); setError(null); setData(null); setPreviousData(null);
     setReloadKey((key) => key + 1);
   }, []);
+  const submitAnalysis = useCallback(async () => {
+    if (!discoveredCompany || !challengeToken) return;
+    setAnalysisSubmitting(true); setAnalysisError(null);
+    try {
+      setAnalysisJob(await filingLensApi.requestAnalysis(discoveredCompany.ticker, challengeToken));
+    } catch (reason) {
+      setAnalysisError(reason instanceof ApiError ? reason.message : 'The analysis request could not be submitted.');
+    } finally {
+      setAnalysisSubmitting(false); setChallengeToken(''); setChallengeReset((value) => value + 1);
+    }
+  }, [challengeToken, discoveredCompany]);
+  const retryAnalysis = useCallback(async () => {
+    if (!analysisJob || !challengeToken) return;
+    setAnalysisSubmitting(true); setAnalysisError(null);
+    try {
+      setAnalysisJob(await filingLensApi.retryAnalysis(analysisJob.job_id, challengeToken));
+    } catch (reason) {
+      setAnalysisError(reason instanceof ApiError ? reason.message : 'The analysis retry could not be submitted.');
+    } finally {
+      setAnalysisSubmitting(false); setChallengeToken(''); setChallengeReset((value) => value + 1);
+    }
+  }, [analysisJob, challengeToken]);
 
   useEffect(() => {
     const controller = new AbortController();
     filingLensApi.companies(controller.signal).then(setCompanies).catch((reason: ApiError) => { if (reason.name !== 'AbortError') setError(reason.message); });
     return () => controller.abort();
   }, [reloadKey]);
+  useEffect(() => {
+    const query = search.trim();
+    if (!query) {
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setSearching(true); setSearchError(null);
+      filingLensApi.searchTickers(query, controller.signal)
+        .then(setSearchResults)
+        .catch((reason: ApiError) => { if (reason.name !== 'AbortError') setSearchError(reason.message); })
+        .finally(() => { if (!controller.signal.aborted) setSearching(false); });
+    }, 250);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [search]);
   useEffect(() => {
     const controller = new AbortController();
     Promise.all([filingLensApi.company(ticker, controller.signal), filingLensApi.filings(ticker, controller.signal)]).then(([nextCompany, nextFilings]) => {
@@ -153,14 +206,27 @@ export default function Home() {
     }).catch((reason: ApiError) => { if (reason.name !== 'AbortError') setError(reason.message); }).finally(() => setLoading(false));
     return () => controller.abort();
   }, [accession, reloadKey]);
+  useEffect(() => {
+    if (!analysisJob || !['queued', 'processing'].includes(analysisJob.status)) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      filingLensApi.analysisStatus(analysisJob.job_id, controller.signal)
+        .then((nextJob) => {
+          setAnalysisJob(nextJob);
+          if (nextJob.status === 'completed') chooseTicker(nextJob.ticker);
+        })
+        .catch((reason: ApiError) => { if (reason.name !== 'AbortError') setAnalysisError(reason.message); });
+    }, 3000);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [analysisJob, chooseTicker]);
 
   return <main id="top"><header className="topbar"><a className="brand" href="#top"><span className="brand-mark">FL</span><span>FilingLens</span></a><nav aria-label="Primary navigation"><a href="#dashboard">Dashboard</a><a href="#filings">Filings</a><a href="#methodology">Methodology</a></nav><span className="api-status"><i aria-hidden="true" /> Live SEC data</span></header>
-    <section className="hero"><div className="hero-copy"><p className="eyebrow">SEC filing intelligence · Four-company pilot</p><h1>Research the filing.<br />Trace every number.</h1><p className="lede">Search public companies, compare matched reporting periods, and inspect the exact SEC evidence behind every result.</p><div className="ticker-search"><label htmlFor="ticker-search">Search the pilot</label><div className="search-box"><span aria-hidden="true">⌕</span><input id="ticker-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search ticker or company" autoComplete="off" /></div>{search && <div className="search-results">{visibleCompanies.length ? visibleCompanies.map((item) => <button type="button" key={item.ticker} onClick={() => chooseTicker(item.ticker)}><strong>{item.ticker}</strong><span>{shortName(item)}</span></button>) : <p>No pilot company matches “{search}”.</p>}</div>}</div><div className="company-pills" aria-label="Pilot companies">{companies.map((item) => <button type="button" className={ticker === item.ticker ? 'active' : ''} onClick={() => chooseTicker(item.ticker)} key={item.ticker}>{item.ticker}</button>)}</div></div>
+    <section className="hero"><div className="hero-copy"><p className="eyebrow">SEC filing intelligence · Universal ticker discovery</p><h1>Research the filing.<br />Trace every number.</h1><p className="lede">Search the official SEC company directory, open analyzed companies, and see which companies still require filing processing.</p><div className="ticker-search"><label htmlFor="ticker-search">Search any SEC ticker</label><div className="search-box"><span aria-hidden="true">⌕</span><input id="ticker-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Try GOOG, AMZN, or a company name" autoComplete="off" aria-describedby="ticker-search-help" /></div><span className="search-help" id="ticker-search-help">Directory discovery does not start analysis.</span>{search && <div className="search-results" aria-live="polite">{searching ? <p>Searching the official SEC directory…</p> : searchError ? <p>{searchError}</p> : searchResults.length ? searchResults.map((item) => <button type="button" key={item.ticker} aria-label={`${item.ticker} ${item.name} ${item.availability === 'requires_analysis' ? 'analysis required' : 'available'}`} onClick={() => chooseSearchResult(item)}><strong>{item.ticker}</strong><span className="search-company-name">{shortName(item)}</span><span className={`availability ${item.availability ?? 'available'}`}>{item.availability === 'requires_analysis' ? 'Analysis required' : 'Available'}</span></button>) : <p>No SEC company matches “{search}”.</p>}</div>}</div><div className="company-pills" aria-label="Analyzed companies">{companies.map((item) => <button type="button" className={ticker === item.ticker ? 'active' : ''} onClick={() => chooseTicker(item.ticker)} key={item.ticker}>{item.ticker}</button>)}</div></div>
       <aside className="proof-card"><span className="proof-kicker">Evidence standard</span><strong>Every claim has a trail.</strong><ul><li><span>01</span>Official EDGAR filings</li><li><span>02</span>Exact XBRL concepts</li><li><span>03</span>Deterministic calculations</li></ul><p>No generated sentiment. No unsupported estimates.</p></aside></section>
-    <section className="dashboard" id="dashboard">{error && <div className="state-panel error-panel" role="alert"><div><strong>We couldn’t load this dashboard</strong><p>{error}</p></div><button type="button" onClick={retry}>Try again</button></div>}{!error && !company && loading && <LoadingState />}{!error && company && <><div className="company-heading"><div><p className="eyebrow dark">{company.ticker} · CIK {company.cik}</p><h2>{shortName(company)}</h2><p>{company.filing_count} processed filings · latest filed {formatDate(company.latest_filing_date)}</p>{company.refresh_status && <p className="refresh-freshness"><span className={`refresh-badge ${company.refresh_status}`}>{refreshLabel(company.refresh_status)}</span>Checked {formatTimestamp(company.last_checked_at)} · {company.refresh_message}</p>}</div>{selectedFiling && <div className="filing-actions"><span className="form-badge">{selectedFiling.form}</span><EvidenceLink href={selectedFiling.official_url}>Open official filing</EvidenceLink></div>}</div>
+    <section className="dashboard" id="dashboard">{discoveredCompany && <div className="discovery-panel" role="status"><div className="discovery-copy"><span>Official SEC directory match</span><strong>{discoveredCompany.ticker} · {discoveredCompany.name}</strong><p>CIK {discoveredCompany.cik}. FilingLens has not published analysis for this company, so no financial conclusions are shown yet.</p>{analysisJob ? <div className={`analysis-progress ${analysisJob.status}`} aria-live="polite"><span className="spinner" aria-hidden="true" /><div><strong>{analysisJob.status === 'queued' ? 'Queued' : analysisJob.status === 'processing' ? 'Processing SEC filings' : analysisJob.status === 'completed' ? 'Analysis complete' : analysisJob.status === 'unsupported' ? 'Unsupported company' : 'Analysis failed'}</strong><p>{analysisJob.message}</p><small>Attempt {analysisJob.attempt_count} of {analysisJob.max_attempts} · updated {formatTimestamp(analysisJob.updated_at)}</small></div></div> : <><TurnstileWidget onToken={setChallengeToken} resetNonce={challengeReset} /><button className="analyze-button" type="button" disabled={!challengeToken || analysisSubmitting} onClick={submitAnalysis}>{analysisSubmitting ? 'Submitting…' : `Analyze ${discoveredCompany.ticker}`}</button></>}{analysisJob?.can_retry && <><TurnstileWidget onToken={setChallengeToken} resetNonce={challengeReset} /><button className="analyze-button" type="button" disabled={!challengeToken || analysisSubmitting} onClick={retryAnalysis}>{analysisSubmitting ? 'Retrying…' : 'Retry analysis'}</button></>}{analysisError && <p className="analysis-error" role="alert">{analysisError}</p>}</div><button type="button" onClick={() => { setDiscoveredCompany(null); setAnalysisJob(null); }}>Continue viewing {ticker}</button></div>}{error && <div className="state-panel error-panel" role="alert"><div><strong>We couldn’t load this dashboard</strong><p>{error}</p></div><button type="button" onClick={retry}>Try again</button></div>}{!error && !company && loading && <LoadingState />}{!error && company && <><div className="company-heading"><div><p className="eyebrow dark">{company.ticker} · CIK {company.cik}</p><h2>{shortName(company)}</h2><p>{company.filing_count} processed filings · latest filed {formatDate(company.latest_filing_date)}</p>{company.refresh_status && <p className="refresh-freshness"><span className={`refresh-badge ${company.refresh_status}`}>{refreshLabel(company.refresh_status)}</span>Checked {formatTimestamp(company.last_checked_at)} · {company.refresh_message}</p>}</div>{selectedFiling && <div className="filing-actions"><span className="form-badge">{selectedFiling.form}</span><EvidenceLink href={selectedFiling.official_url}>Open official filing</EvidenceLink></div>}</div>
       <div className="workspace" id="filings"><aside className="filing-sidebar"><span className="sidebar-label">Filing history</span>{filings.map((filing) => <button type="button" className={filing.accession_number === accession ? 'active' : ''} onClick={() => chooseAccession(filing.accession_number)} key={filing.accession_number}><span className="form-badge">{filing.form}</span><strong>{formatDate(filing.report_date)}</strong><small>Filed {formatDate(filing.filing_date)}</small></button>)}</aside>
         <div className="workspace-main"><FilingPicker filings={filings} selected={accession} onSelect={chooseAccession} />{selectedFiling && <div className="filing-summary"><div><span>Reporting period</span><strong>{formatDate(selectedFiling.report_date)}</strong></div><div><span>Filed</span><strong>{formatDate(selectedFiling.filing_date)}</strong></div><div><span>Accession</span><strong>{selectedFiling.accession_number}</strong></div><EvidenceLink href={selectedFiling.filing_index_url}>SEC filing index</EvidenceLink></div>}
           <div className="view-tabs" role="tablist" aria-label="Filing analysis views">{([['overview', 'Financials'], ['ratios', 'Ratios'], ['comparison', 'Year over year'], ['risks', 'Risk changes']] as Array<[View, string]>).map(([key, label]) => <button role="tab" aria-selected={view === key} className={view === key ? 'active' : ''} type="button" onClick={() => setView(key)} key={key}>{label}</button>)}</div>{loading && <LoadingState />}{!loading && data && <section className="analysis-panel"><div className="section-heading"><div><p className="eyebrow dark">{view === 'overview' ? 'Reported facts' : view === 'ratios' ? 'Transparent calculations' : view === 'comparison' ? 'Matched-period analysis' : 'Item 1A language'}</p><h3>{view === 'overview' ? 'Financial snapshot' : view === 'ratios' ? 'Calculated ratios' : view === 'comparison' ? 'Year-over-year movement' : 'Risk-factor changes'}</h3></div><p>{view === 'overview' ? 'Values are matched to this exact accession and reporting period.' : view === 'ratios' ? 'Every formula exposes the SEC facts used as inputs.' : view === 'comparison' ? 'Quarterly filings match the same fiscal quarter in the prior year.' : 'Changed passages appear side by side with their filing anchors.'}</p></div>{view === 'overview' && <Financials facts={data.financials.facts} evidence={data.financials.evidence} />}{view === 'ratios' && <Ratios ratios={data.ratios.ratios} evidence={data.ratios.evidence} />}{view === 'comparison' && <ComparisonView comparison={comparison} current={data} previous={previousData} />}{view === 'risks' && <RisksView comparison={riskComparison} currentPassages={riskBundle?.passages ?? []} previousPassages={previousData?.risks.risks[0]?.passages ?? []} />}</section>}{!loading && !data && !error && <EmptyState title="No filing selected" body="Choose a filing from the history to inspect its evidence." />}</div></div></>}</section>
     <section className="methodology" id="methodology"><div className="method-heading"><p className="eyebrow">Built for verification</p><h2>From filing to finding,<br />without losing the source.</h2></div><div className="method-grid"><article><span>01</span><h3>Acquire</h3><p>Download official filing identities, HTML documents, and structured XBRL facts from SEC EDGAR.</p></article><article><span>02</span><h3>Normalize</h3><p>Map company-specific concepts and fiscal calendars into a versioned, validated schema.</p></article><article><span>03</span><h3>Compare</h3><p>Calculate ratios and compare annual filings or the same fiscal quarter—never unrelated periods.</p></article><article><span>04</span><h3>Cite</h3><p>Carry SEC URLs and evidence IDs through every fact, calculation, and language change.</p></article></div><p className="disclaimer">Research software, not investment advice. Numeric direction and text-change labels are not stock recommendations or legal-materiality conclusions.</p></section>
-    <footer><a className="brand footer-brand" href="#top"><span className="brand-mark">FL</span><span>FilingLens</span></a><p>Public SEC data · Schema 1.0.0 · AAPL, MSFT, NVDA, TSLA</p><a href="#top">Back to top ↑</a></footer></main>;
+    <footer><a className="brand footer-brand" href="#top"><span className="brand-mark">FL</span><span>FilingLens</span></a><p>Official SEC directory discovery · asynchronous validation-gated analysis · Schema 1.0.0</p><a href="#top">Back to top ↑</a></footer></main>;
 }

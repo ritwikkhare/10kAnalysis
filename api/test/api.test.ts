@@ -2,7 +2,18 @@ import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import migrationSql from "../migrations/0001_initial.sql?raw";
 import refreshMigrationSql from "../migrations/0002_refresh_status.sql?raw";
+import directoryMigrationSql from "../migrations/0003_sec_company_directory.sql?raw";
+import analysisMigrationSql from "../migrations/0004_analysis_jobs.sql?raw";
 import { evidenceFor } from "../src/db.js";
+import { enforceTickerSearchLimit } from "../src/index.js";
+import {
+  analysisJobStatus,
+  consumeAnalysisQueue,
+  createAnalysisJob,
+  retryAnalysisJob,
+  type AnalysisQueueMessage,
+  type OnboardingEnv,
+} from "../src/onboarding.js";
 
 const CURRENT = "0000000001-26-000001";
 const PREVIOUS = "0000000001-25-000001";
@@ -22,12 +33,31 @@ const refreshMigrationQueries = refreshMigrationSql
   .split(";")
   .map((query) => query.trim())
   .filter(Boolean);
+const directoryMigrationQueries = directoryMigrationSql
+  .split(";")
+  .map((query) => query.trim())
+  .filter(Boolean);
+const analysisMigrationQueries = analysisMigrationSql
+  .split(";")
+  .map((query) => query.trim())
+  .filter(Boolean);
 
 async function seed(): Promise<void> {
   await env.DB.batch([
     env.DB.prepare("INSERT INTO companies (schema_version, cik, ticker, name) VALUES (?, ?, ?, ?)").bind("1.0.0", "0000000001", "TEST", "Test Corporation"),
     env.DB.prepare("INSERT INTO filings (accession_number, company_id, schema_version, form, filing_date, report_date, official_url, filing_index_url) SELECT ?, id, ?, ?, ?, ?, ?, ? FROM companies WHERE ticker = ?").bind(CURRENT, "1.0.0", "10-K", "2026-02-01", "2025-12-31", "https://www.sec.gov/Archives/test-current.htm", "https://www.sec.gov/Archives/test-current-index.html", "TEST"),
     env.DB.prepare("INSERT INTO filings (accession_number, company_id, schema_version, form, filing_date, report_date, official_url, filing_index_url) SELECT ?, id, ?, ?, ?, ?, ?, ? FROM companies WHERE ticker = ?").bind(PREVIOUS, "1.0.0", "10-K", "2025-02-01", "2024-12-31", "https://www.sec.gov/Archives/test-previous.htm", "https://www.sec.gov/Archives/test-previous-index.html", "TEST"),
+  ]);
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO sec_company_directory (ticker, cik, name, source_url, source_fetched_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind("TEST", "0000000001", "Test Corporation", "https://www.sec.gov/files/company_tickers.json", "2026-08-31T12:00:00Z"),
+    env.DB.prepare(
+      "INSERT INTO sec_company_directory (ticker, cik, name, source_url, source_fetched_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind("FRESH", "0000000002", "Fresh Public Company", "https://www.sec.gov/files/company_tickers.json", "2026-08-31T12:00:00Z"),
+    env.DB.prepare(
+      "INSERT INTO sec_directory_sync (singleton_id, source_url, fetched_at, row_count, sha256) VALUES (1, ?, ?, 2, ?)",
+    ).bind("https://www.sec.gov/files/company_tickers.json", "2026-08-31T12:00:00Z", "a".repeat(64)),
   ]);
   await env.DB.batch([
     env.DB.prepare(
@@ -76,11 +106,28 @@ function expectEnvelope(body: any): void {
   expect(body).toHaveProperty("meta");
 }
 
-describe("read-only SEC intelligence API", () => {
+function fakeQueue(sent: AnalysisQueueMessage[]): Queue<AnalysisQueueMessage> {
+  const metrics = { backlogCount: 0, backlogBytes: 0 };
+  return {
+    metrics: async () => metrics,
+    send: async (message) => {
+      sent.push(message);
+      return { metadata: { metrics } };
+    },
+    sendBatch: async (messages) => {
+      for (const message of messages) sent.push(message.body);
+      return { metadata: { metrics } };
+    },
+  };
+}
+
+describe("SEC intelligence API", () => {
   beforeAll(async () => {
     await applyD1Migrations(env.DB, [
       { name: "0001_initial.sql", queries: migrationQueries },
       { name: "0002_refresh_status.sql", queries: refreshMigrationQueries },
+      { name: "0003_sec_company_directory.sql", queries: directoryMigrationQueries },
+      { name: "0004_analysis_jobs.sql", queries: analysisMigrationQueries },
     ]);
     await seed();
   });
@@ -118,6 +165,45 @@ describe("read-only SEC intelligence API", () => {
     expect(JSON.stringify(body)).not.toContain("stack");
   });
 
+  it("searches the universal SEC directory and marks analysis availability", async () => {
+    const available = await get("/api/v1/tickers?q=test");
+    const pending = await get("/api/v1/tickers?q=fresh");
+    expect(available.body.data[0]).toMatchObject({
+      ticker: "TEST",
+      is_processed: true,
+      availability: "available",
+      filing_count: 2,
+    });
+    expect(pending.body.data[0]).toMatchObject({
+      ticker: "FRESH",
+      is_processed: false,
+      availability: "requires_analysis",
+      filing_count: 0,
+    });
+    expect(pending.body.meta).toMatchObject({
+      directory_status: "ready",
+      directory_row_count: 2,
+      directory_source_url: "https://www.sec.gov/files/company_tickers.json",
+    });
+    expect(pending.response.headers.get("cache-control")).toContain("s-maxage=3600");
+  });
+
+  it("validates search input and emits a standard rate-limit response", async () => {
+    const invalid = await get(`/api/v1/tickers?q=${encodeURIComponent("x".repeat(65))}`);
+    expect(invalid.response.status).toBe(400);
+    expect(invalid.body.data.error.code).toBe("INVALID_SEARCH_QUERY");
+
+    const response = await enforceTickerSearchLimit(
+      new Request("https://api.example.test/api/v1/tickers?q=test", {
+        headers: { "CF-Connecting-IP": "192.0.2.1" },
+      }),
+      { limit: async () => ({ success: false }) },
+    );
+    expect(response?.status).toBe(429);
+    expect(response?.headers.get("retry-after")).toBe("60");
+    expect((await response?.json() as any).data.error.code).toBe("RATE_LIMITED");
+  });
+
   it("loads production-sized evidence sets in safe D1 batches", async () => {
     const statements = Array.from({ length: 81 }, (_, index) =>
       env.DB.prepare(
@@ -137,9 +223,98 @@ describe("read-only SEC intelligence API", () => {
     expect(evidence).toHaveLength(81);
   });
 
-  it("rejects writes", async () => {
+  it("rejects unrelated writes", async () => {
     const response = await SELF.fetch("https://api.example.test/api/v1/tickers", { method: "POST" });
     expect(response.status).toBe(405);
     expect((await response.json() as any).data.error.code).toBe("METHOD_NOT_ALLOWED");
+  });
+
+  it("queues one protected job, reports duplicates, processes asynchronously, and permits a bounded retry", async () => {
+    const sent: AnalysisQueueMessage[] = [];
+    const queue = fakeQueue(sent);
+    const onboardingEnv: OnboardingEnv = {
+      DB: env.DB,
+      ANALYSIS_QUEUE: queue,
+      TICKER_SEARCH_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      ONBOARDING_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      ONBOARDING_ENABLED: "true",
+      GITHUB_REPOSITORY: "ritwikkhare/10kAnalysis",
+      TURNSTILE_ACTION: "analyze_ticker",
+      TURNSTILE_HOSTNAMES: "filinglens-apple-sec.ritwikkhare10k.workers.dev",
+    };
+    const challenge = async () => ({ ok: true } as const);
+    const request = () => new Request("https://api.example.test/api/v1/companies/FRESH/analysis", {
+      method: "POST",
+      headers: { "content-type": "application/json", "CF-Connecting-IP": "192.0.2.3" },
+      body: JSON.stringify({ turnstile_token: "fresh-token" }),
+    });
+
+    const created = await createAnalysisJob(request(), "FRESH", onboardingEnv, challenge);
+    const createdBody: any = await created.json();
+    expect(created.status).toBe(202);
+    expect(createdBody.data).toMatchObject({ ticker: "FRESH", status: "queued", can_retry: false });
+    expect(sent).toHaveLength(1);
+
+    const duplicate = await createAnalysisJob(request(), "FRESH", onboardingEnv, challenge);
+    const duplicateBody: any = await duplicate.json();
+    expect(duplicate.status).toBe(202);
+    expect(duplicateBody.data.job_id).toBe(createdBody.data.job_id);
+    expect(duplicateBody.meta.duplicate_request).toBe(true);
+    expect(sent).toHaveLength(1);
+
+    let acknowledged = false;
+    const message = {
+      id: "queue-message-1",
+      timestamp: new Date(),
+      body: sent[0],
+      attempts: 1,
+      ack: () => { acknowledged = true; },
+      retry: () => { throw new Error("unexpected retry"); },
+    } as Message<AnalysisQueueMessage>;
+    await consumeAnalysisQueue(
+      { queue: "filinglens-analysis", messages: [message], metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } }, ackAll: () => {}, retryAll: () => {} },
+      onboardingEnv,
+      async () => new Response(null, { status: 204 }),
+    );
+    expect(acknowledged).toBe(true);
+    const processing = await analysisJobStatus(createdBody.data.job_id, onboardingEnv);
+    expect((await processing.json() as any).data).toMatchObject({ status: "processing", attempt_count: 1 });
+
+    await env.DB.prepare(
+      "UPDATE analysis_jobs SET status = 'failed', completed_at = ?, updated_at = ?, public_message = 'Safe failure.', error_code = 'PIPELINE_FAILED' WHERE job_id = ?",
+    ).bind("2026-08-31T13:00:00Z", "2026-08-31T13:00:00Z", createdBody.data.job_id).run();
+    const retried = await retryAnalysisJob(request(), createdBody.data.job_id, onboardingEnv, challenge);
+    expect(retried.status).toBe(202);
+    expect((await retried.json() as any).data.status).toBe("queued");
+    expect(sent).toHaveLength(2);
+  });
+
+  it("returns safe unsupported, already-analyzed, disabled, and rate-limit states", async () => {
+    const sent: AnalysisQueueMessage[] = [];
+    const base = {
+      DB: env.DB,
+      ANALYSIS_QUEUE: fakeQueue(sent),
+      TICKER_SEARCH_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      ONBOARDING_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      ONBOARDING_ENABLED: "true",
+      GITHUB_REPOSITORY: "ritwikkhare/10kAnalysis",
+      TURNSTILE_ACTION: "analyze_ticker",
+      TURNSTILE_HOSTNAMES: "filinglens-apple-sec.ritwikkhare10k.workers.dev",
+    } satisfies OnboardingEnv;
+    const challenge = async () => ({ ok: true } as const);
+    const makeRequest = () => new Request("https://api.example.test", { method: "POST", body: JSON.stringify({ turnstile_token: "token" }) });
+    expect((await createAnalysisJob(makeRequest(), "NOPE", base, challenge)).status).toBe(404);
+    expect((await createAnalysisJob(makeRequest(), "TEST", base, challenge)).status).toBe(409);
+    expect((await createAnalysisJob(makeRequest(), "NOPE", { ...base, ONBOARDING_ENABLED: "false" }, challenge)).status).toBe(503);
+    const rolloutBlocked = await createAnalysisJob(makeRequest(), "NOPE", {
+      ...base,
+      ONBOARDING_TEST_TICKER: "FRESH",
+    }, challenge);
+    expect(rolloutBlocked.status).toBe(503);
+    expect((await rolloutBlocked.json() as any).data.error.code).toBe("CONTROLLED_ROLLOUT");
+    expect((await createAnalysisJob(makeRequest(), "NOPE", {
+      ...base,
+      ONBOARDING_RATE_LIMITER: { limit: async () => ({ success: false }) },
+    }, challenge)).status).toBe(429);
   });
 });

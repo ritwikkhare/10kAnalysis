@@ -1,23 +1,109 @@
 import { all, evidenceFor, first, parseJsonColumn, type Row } from "./db.js";
-import { apiError, cleanAccession, cleanTicker, json, pagination } from "./http.js";
+import { apiError, cleanAccession, cleanSearchQuery, cleanTicker, json, pagination } from "./http.js";
+import {
+  analysisJobStatus,
+  consumeAnalysisQueue,
+  createAnalysisJob,
+  retryAnalysisJob,
+  type AnalysisQueueMessage,
+} from "./onboarding.js";
+
+const SEC_DIRECTORY_URL = "https://www.sec.gov/files/company_tickers.json";
+const TICKER_CACHE_CONTROL = "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400";
 
 function route(pathname: string): string[] {
   return pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
 }
 
 async function tickerSearch(request: Request, env: Env): Promise<Response> {
+  const limited = await enforceTickerSearchLimit(request, env.TICKER_SEARCH_RATE_LIMITER);
+  if (limited) return limited;
   const url = new URL(request.url);
-  const query = (url.searchParams.get("q") ?? "").trim();
+  const query = cleanSearchQuery(url.searchParams.get("q") ?? "");
+  if (query === null) {
+    return apiError(400, "INVALID_SEARCH_QUERY", "Search must be 64 characters or fewer and cannot contain control characters.");
+  }
   const { limit, offset } = pagination(url);
   const like = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
-  const rows = await all(
+  const directory = await first(
     env.DB,
-    `SELECT ticker, cik, name FROM companies
-      WHERE ? = '' OR ticker LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'
-      ORDER BY CASE WHEN ticker = UPPER(?) THEN 0 ELSE 1 END, ticker LIMIT ? OFFSET ?`,
-    [query, like, like, query, limit, offset],
+    "SELECT source_url, fetched_at, row_count, sha256 FROM sec_directory_sync WHERE singleton_id = 1",
   );
-  return json(rows, { query, limit, offset, count: rows.length });
+  let rows: Row[];
+  if (query && directory) {
+    rows = await all(
+      env.DB,
+      `SELECT d.ticker, d.cik, d.name,
+        CASE WHEN c.id IS NULL THEN 0 ELSE 1 END AS is_processed,
+        COUNT(f.accession_number) AS filing_count
+        FROM sec_company_directory d
+        LEFT JOIN companies c ON c.ticker = d.ticker
+        LEFT JOIN filings f ON f.company_id = c.id
+        WHERE d.ticker LIKE ? ESCAPE '\\' OR d.name LIKE ? ESCAPE '\\'
+        GROUP BY d.ticker, d.cik, d.name, c.id
+        ORDER BY
+          CASE WHEN d.ticker = UPPER(?) THEN 0
+               WHEN d.ticker LIKE UPPER(?) || '%' THEN 1
+               WHEN d.name LIKE ? || '%' THEN 2 ELSE 3 END,
+          is_processed DESC, d.ticker
+        LIMIT ? OFFSET ?`,
+      [like, like, query, query, query, limit, offset],
+    );
+  } else {
+    rows = await all(
+      env.DB,
+      `SELECT c.ticker, c.cik, c.name, 1 AS is_processed,
+        COUNT(f.accession_number) AS filing_count
+        FROM companies c LEFT JOIN filings f ON f.company_id = c.id
+        WHERE ? = '' OR c.ticker LIKE ? ESCAPE '\\' OR c.name LIKE ? ESCAPE '\\'
+        GROUP BY c.id
+        ORDER BY CASE WHEN c.ticker = UPPER(?) THEN 0 ELSE 1 END, c.ticker
+        LIMIT ? OFFSET ?`,
+      [query, like, like, query, limit, offset],
+    );
+  }
+  const results = rows.map((row) => {
+    const isProcessed = Boolean(row.is_processed);
+    return {
+      ticker: String(row.ticker),
+      cik: String(row.cik),
+      name: String(row.name),
+      is_processed: isProcessed,
+      availability: isProcessed ? "available" : "requires_analysis",
+      filing_count: Number(row.filing_count ?? 0),
+    };
+  });
+  return json(
+    results,
+    {
+      query,
+      limit,
+      offset,
+      count: results.length,
+      directory_status: directory ? "ready" : "unavailable",
+      directory_source_url: directory?.source_url ?? SEC_DIRECTORY_URL,
+      directory_fetched_at: directory?.fetched_at ?? null,
+      directory_row_count: directory?.row_count ?? 0,
+      directory_sha256: directory?.sha256 ?? null,
+    },
+    200,
+    { "cache-control": TICKER_CACHE_CONTROL },
+  );
+}
+
+export async function enforceTickerSearchLimit(
+  request: Request,
+  limiter: RateLimit,
+): Promise<Response | null> {
+  const clientKey = request.headers.get("CF-Connecting-IP") ?? "unknown-client";
+  const outcome = await limiter.limit({ key: `ticker-search:${clientKey}` });
+  if (outcome.success) return null;
+  return apiError(
+    429,
+    "RATE_LIMITED",
+    "Ticker search is temporarily rate limited. Please wait a minute and try again.",
+    { "retry-after": "60" },
+  );
 }
 
 async function companyDetails(tickerValue: string, env: Env): Promise<Response> {
@@ -36,7 +122,15 @@ async function companyDetails(tickerValue: string, env: Env): Promise<Response> 
       WHERE c.ticker = ? GROUP BY c.id`,
     [ticker],
   );
-  return company ? json(company) : apiError(404, "COMPANY_NOT_FOUND", `No pilot company found for ${ticker}.`);
+  if (company) return json(company);
+  const directoryCompany = await first(
+    env.DB,
+    "SELECT ticker FROM sec_company_directory WHERE ticker = ?",
+    [ticker],
+  );
+  return directoryCompany
+    ? apiError(404, "COMPANY_NOT_ANALYZED", `${ticker} is in the SEC directory but has not been analyzed yet.`)
+    : apiError(404, "COMPANY_NOT_FOUND", `${ticker} was not found in the synchronized SEC directory.`);
 }
 
 async function refreshStatus(env: Env): Promise<Response> {
@@ -75,7 +169,7 @@ async function filingHistory(request: Request, tickerValue: string, env: Env): P
     [ticker, form, form, limit, offset],
   );
   const exists = await first(env.DB, "SELECT 1 AS found FROM companies WHERE ticker = ?", [ticker]);
-  if (!exists) return apiError(404, "COMPANY_NOT_FOUND", `No pilot company found for ${ticker}.`);
+  if (!exists) return apiError(404, "COMPANY_NOT_ANALYZED", `${ticker} has not been analyzed yet.`);
   return json(rows, { ticker, form, limit, offset, count: rows.length });
 }
 
@@ -182,10 +276,27 @@ async function collectionOrMissing(accession: string, name: string, rows: Row[],
   return json({ accession_number: accession, [name]: rows, evidence });
 }
 
-async function handle(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "This API is read-only and accepts GET requests only.");
+export async function handle(request: Request, env: Env): Promise<Response> {
   const parts = route(new URL(request.url).pathname);
   if (parts[0] !== "api" || parts[1] !== "v1") return apiError(404, "NOT_FOUND", "Use an /api/v1 endpoint.");
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "content-type",
+        "access-control-allow-methods": "GET, POST, OPTIONS",
+        "access-control-max-age": "86400",
+      },
+    });
+  }
+  if (request.method === "POST" && parts.length === 5 && parts[2] === "companies" && parts[4] === "analysis") {
+    return createAnalysisJob(request, parts[3], env);
+  }
+  if (request.method === "POST" && parts.length === 5 && parts[2] === "analysis-jobs" && parts[4] === "retry") {
+    return retryAnalysisJob(request, parts[3], env);
+  }
+  if (request.method !== "GET") return apiError(405, "METHOD_NOT_ALLOWED", "This endpoint does not accept that method.");
   if (parts.length === 3 && parts[2] === "health") return json({ status: "ok", storage: "d1" });
   if (parts.length === 3 && parts[2] === "refresh-status") return refreshStatus(env);
   if (parts.length === 3 && parts[2] === "tickers") return tickerSearch(request, env);
@@ -196,6 +307,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (parts.length === 5 && parts[2] === "filings" && parts[4] === "comparisons") return comparisons(parts[3], env);
   if (parts.length === 5 && parts[2] === "filings" && parts[4] === "risks") return risks(parts[3], env);
   if (parts.length === 4 && parts[2] === "evidence") return oneEvidence(decodeURIComponent(parts[3]), env);
+  if (parts.length === 4 && parts[2] === "analysis-jobs") return analysisJobStatus(parts[3], env);
   return apiError(404, "NOT_FOUND", "API endpoint not found.");
 }
 
@@ -215,4 +327,7 @@ export default {
       return apiError(500, "INTERNAL_ERROR", "The API could not complete this request.");
     }
   },
-} satisfies ExportedHandler<Env>;
+  async queue(batch, env): Promise<void> {
+    await consumeAnalysisQueue(batch, env);
+  },
+} satisfies ExportedHandler<Env, AnalysisQueueMessage>;
