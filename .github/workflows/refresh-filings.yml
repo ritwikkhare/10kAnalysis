@@ -50,6 +50,7 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
           pnpm --dir api test
+          pnpm --dir api exec wrangler types
           pnpm --dir api check
 
       - name: Read immutable accessions already stored in D1
