@@ -62,7 +62,7 @@ jobs:
 
       - name: Process only newly published SEC filings
         run: |
-          python scripts/refresh_filings.py \
+          python -m scripts.refresh_filings \
             --known-accessions work/refresh/known-accessions.json \
             --output-dir work/refresh/processed \
             --sql-output work/refresh/import.sql \
