@@ -185,7 +185,7 @@ describe("SEC intelligence API", () => {
       directory_row_count: 2,
       directory_source_url: "https://www.sec.gov/files/company_tickers.json",
     });
-    expect(pending.response.headers.get("cache-control")).toContain("s-maxage=3600");
+    expect(pending.response.headers.get("cache-control")).toBe("no-store");
   });
 
   it("validates search input and emits a standard rate-limit response", async () => {
@@ -306,12 +306,6 @@ describe("SEC intelligence API", () => {
     expect((await createAnalysisJob(makeRequest(), "NOPE", base, challenge)).status).toBe(404);
     expect((await createAnalysisJob(makeRequest(), "TEST", base, challenge)).status).toBe(409);
     expect((await createAnalysisJob(makeRequest(), "NOPE", { ...base, ONBOARDING_ENABLED: "false" }, challenge)).status).toBe(503);
-    const rolloutBlocked = await createAnalysisJob(makeRequest(), "NOPE", {
-      ...base,
-      ONBOARDING_TEST_TICKER: "FRESH",
-    }, challenge);
-    expect(rolloutBlocked.status).toBe(503);
-    expect((await rolloutBlocked.json() as any).data.error.code).toBe("CONTROLLED_ROLLOUT");
     expect((await createAnalysisJob(makeRequest(), "NOPE", {
       ...base,
       ONBOARDING_RATE_LIMITER: { limit: async () => ({ success: false }) },

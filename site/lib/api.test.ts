@@ -15,7 +15,21 @@ describe('FilingLens API client', () => {
     const fetchMock = vi.fn().mockResolvedValue(reply([{ ticker: 'AAPL', cik: '0000320193', name: 'Apple Inc.' }]));
     vi.stubGlobal('fetch', fetchMock);
     await expect(filingLensApi.companies()).resolves.toEqual([{ ticker: 'AAPL', cik: '0000320193', name: 'Apple Inc.' }]);
-    expect(fetchMock).toHaveBeenCalledWith(`${DEFAULT_API_BASE}/tickers?q=`, expect.objectContaining({ headers: { accept: 'application/json' } }));
+    expect(fetchMock).toHaveBeenCalledWith(`${DEFAULT_API_BASE}/tickers?q=`, expect.objectContaining({ headers: { accept: 'application/json' }, cache: 'no-store' }));
+  });
+
+  it('searches the complete SEC directory with an encoded query', async () => {
+    const result = [{
+      ticker: 'GOOG', cik: '0001652044', name: 'Alphabet Inc.',
+      is_processed: false, availability: 'requires_analysis', filing_count: 0,
+    }];
+    const fetchMock = vi.fn().mockResolvedValue(reply(result));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(filingLensApi.searchTickers('alpha bet')).resolves.toEqual(result);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${DEFAULT_API_BASE}/tickers?q=alpha%20bet&limit=10`,
+      expect.objectContaining({ headers: { accept: 'application/json' }, cache: 'no-store' }),
+    );
   });
 
   it('searches the complete SEC directory with an encoded query', async () => {

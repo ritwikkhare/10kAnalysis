@@ -213,7 +213,13 @@ export default function Home() {
       filingLensApi.analysisStatus(analysisJob.job_id, controller.signal)
         .then((nextJob) => {
           setAnalysisJob(nextJob);
-          if (nextJob.status === 'completed') chooseTicker(nextJob.ticker);
+          if (nextJob.status === 'completed') {
+            // Re-read both the analyzed-company shortcuts and the selected
+            // dashboard immediately. The API's availability response is
+            // intentionally no-store, so the ticker cannot remain stale.
+            setReloadKey((key) => key + 1);
+            chooseTicker(nextJob.ticker);
+          }
         })
         .catch((reason: ApiError) => { if (reason.name !== 'AbortError') setAnalysisError(reason.message); });
     }, 3000);

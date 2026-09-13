@@ -66,6 +66,7 @@ async function request<T>(path: string, signal?: AbortSignal, init: RequestInit 
   try {
     response = await fetch(`${apiBase()}${path}`, {
       ...init,
+      cache: init.cache ?? (path.startsWith('/tickers?') ? 'no-store' : undefined),
       headers: { accept: 'application/json', ...init.headers },
       signal,
     });

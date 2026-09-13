@@ -9,7 +9,7 @@ import sys
 
 from .client import SUPPORTED_FORMS, SecClient, SecError
 from .comparison import compare_years
-from .financials import extract_financials, find_prior_year_quarter
+from .financials import extract_financials, find_prior_year_filing
 from .ratios import calculate_ratios
 from .report import build_html_report
 from .risks import compare_risk_sections, extract_risk_section
@@ -85,12 +85,10 @@ def main(argv: list[str] | None = None) -> int:
                 "Item 1A comparison and the complete risk report require Form 10-K."
             )
         client = SecClient(args.user_agent)
-        filing_count = (
-            2
-            if args.form == "10-K"
-            and (args.compare_previous or args.compare_risks or args.build_report)
-            else 1
-        )
+        # Select the current filing first.  The comparison filing is resolved
+        # from XBRL fiscal identity below, rather than assuming the second-most
+        # recent filing represents the prior fiscal year.
+        filing_count = 1
         downloads = client.download_recent_filings(
             args.ticker,
             args.output_dir,
@@ -123,18 +121,14 @@ def main(argv: list[str] | None = None) -> int:
                 ratios, ratios_path = calculate_ratios(financials, html_path.parent)
                 pipeline_warnings.extend(ratios.warnings)
             if args.compare_previous or args.build_report:
-                if args.form == "10-Q":
-                    quarter_match = find_prior_year_quarter(
-                        client.fetch_json,
-                        financials,
+                quarter_match = find_prior_year_filing(client.fetch_json, financials)
+                downloads.append(
+                    client.download_filing_by_accession(
+                        args.ticker,
+                        quarter_match.accession_number,
+                        args.output_dir,
                     )
-                    downloads.append(
-                        client.download_filing_by_accession(
-                            args.ticker,
-                            quarter_match.accession_number,
-                            args.output_dir,
-                        )
-                    )
+                )
                 previous_metadata, previous_html_path = downloads[1]
                 previous_financials, _ = extract_financials(
                     client.fetch_json,
@@ -156,6 +150,16 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 pipeline_warnings.extend(comparison_result.warnings)
         if args.compare_risks or args.build_report:
+            if len(downloads) == 1:
+                # Risk-only runs still use the evidence-backed prior fiscal-year
+                # annual filing, and never a 10-K/A treated as a new year.
+                current_financials, _ = extract_financials(
+                    client.fetch_json, metadata, html_path.parent
+                )
+                quarter_match = find_prior_year_filing(client.fetch_json, current_financials)
+                downloads.append(client.download_filing_by_accession(
+                    args.ticker, quarter_match.accession_number, args.output_dir
+                ))
             previous_metadata, previous_html_path = downloads[1]
             current_risks, _ = extract_risk_section(
                 html_path, metadata, html_path.parent

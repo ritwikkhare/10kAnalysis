@@ -9,7 +9,10 @@ import {
 } from "./onboarding.js";
 
 const SEC_DIRECTORY_URL = "https://www.sec.gov/files/company_tickers.json";
-const TICKER_CACHE_CONTROL = "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400";
+// Availability changes when a background job imports a company.  Do not cache
+// the joined search result at the edge or a completed company can remain marked
+// "Analysis required".  The directory itself remains persistently cached in D1.
+const TICKER_CACHE_CONTROL = "no-store";
 
 function route(pathname: string): string[] {
   return pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
@@ -272,7 +275,7 @@ async function linkedRows(accession: string, rows: Row[], env: Env, name: string
 
 async function collectionOrMissing(accession: string, name: string, rows: Row[], evidence: Row[], env: Env): Promise<Response> {
   const filing = await first(env.DB, "SELECT accession_number FROM filings WHERE accession_number = ?", [accession]);
-  if (!filing) return apiError(404, "FILING_NOT_FOUND", `No pilot filing found for ${accession}.`);
+  if (!filing) return apiError(404, "FILING_NOT_FOUND", `No analyzed filing found for ${accession}.`);
   return json({ accession_number: accession, [name]: rows, evidence });
 }
 

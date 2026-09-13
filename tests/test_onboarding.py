@@ -26,6 +26,11 @@ class UnsupportedClient(FakeClient):
         raise ValueError(f"No {form} filing")
 
 
+class ForeignIssuerClient(FakeClient):
+    def filing_capability(self, cik: int) -> tuple[str, str]:
+        return "foreign_issuer", "20-F and 6-K detected"
+
+
 class OnboardingTests(unittest.TestCase):
     @staticmethod
     def _valid_runner(ticker: str, form: str, root: Path, user_agent: str) -> int:
@@ -87,6 +92,20 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(manifest["status"], "unsupported")
         self.assertNotIn("INSERT OR IGNORE INTO filings", sql)
         self.assertIn("status = 'unsupported'", sql)
+
+    def test_foreign_issuer_is_identified_before_standard_pipeline_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, sql, success = build_onboarding_import(
+                job_id=JOB_ID, ticker="EXMPL", expected_cik="0001234567",
+                known_accessions=set(), output_dir=Path(directory),
+                user_agent="student@example.com", client=ForeignIssuerClient(),
+                pipeline_runner=lambda *_: self.fail("pipeline must not run"),
+            )
+        self.assertFalse(success)
+        self.assertEqual(manifest["status"], "unsupported")
+        self.assertEqual(manifest["unsupported_reason"], "foreign_issuer")
+        self.assertIn("20-F", manifest["message"])
+        self.assertIn("UNSUPPORTED_FOREIGN_ISSUER", sql)
 
     def test_identity_mismatch_fails_before_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

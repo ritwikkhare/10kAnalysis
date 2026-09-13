@@ -35,10 +35,23 @@ METRICS = (
     MetricSpec(
         "revenue",
         "Revenue",
-        ("RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues"),
+        (
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "Revenues",
+            "SalesRevenueNet",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RegulatedAndUnregulatedOperatingRevenue",
+            "OperatingRevenue",
+        ),
         "duration",
     ),
-    MetricSpec("net_income", "Net income", ("NetIncomeLoss",), "duration"),
+    MetricSpec(
+        "net_income",
+        "Net income",
+        ("NetIncomeLoss", "ProfitLoss"),
+        "duration",
+    ),
     MetricSpec("total_assets", "Total assets", ("Assets",), "instant"),
     MetricSpec("total_liabilities", "Total liabilities", ("Liabilities",), "instant"),
     MetricSpec(
@@ -142,7 +155,20 @@ def _choose_fact(
             ),
             reverse=True,
         )
-    return candidates[0] if candidates else None
+    if not candidates:
+        return None
+    # The SEC occasionally exposes duplicate contexts for one concept.  A
+    # deterministic choice is safe only when the top context agrees on value;
+    # conflicting values are rejected instead of guessed.
+    best = candidates[0]
+    peers = [
+        item for item in candidates
+        if item.get("start") == best.get("start")
+        and item.get("end") == best.get("end")
+        and item.get("fp") == best.get("fp")
+    ]
+    values = {item.get("val") for item in peers if isinstance(item.get("val"), (int, float))}
+    return best if len(values) <= 1 else None
 
 
 def fiscal_period_identity(financials: FinancialExtraction) -> tuple[int, str]:
@@ -163,14 +189,14 @@ def fiscal_period_identity(financials: FinancialExtraction) -> tuple[int, str]:
     return int(fiscal_year), str(fiscal_period)
 
 
-def find_prior_year_quarter(
+def find_prior_year_filing(
     fetch_json: JsonFetcher,
     current: FinancialExtraction,
 ) -> QuarterMatch:
-    """Find the prior-year 10-Q accession with the same SEC fiscal period focus."""
+    """Find the prior-year accession with the same SEC fiscal-period focus."""
 
-    if current.form != "10-Q":
-        raise SecError("Prior-year quarter matching requires a Form 10-Q.")
+    if current.form not in {"10-K", "10-Q"}:
+        raise SecError("Prior-year matching requires Form 10-K or 10-Q.")
     current_fiscal_year, fiscal_period = fiscal_period_identity(current)
     previous_fiscal_year = current_fiscal_year - 1
     company_facts = fetch_json(COMPANY_FACTS_URL.format(cik=int(current.cik)))
@@ -193,7 +219,7 @@ def find_prior_year_quarter(
             for entry in entries:
                 accession = entry.get("accn")
                 if (
-                    entry.get("form") == "10-Q"
+                    entry.get("form") == current.form
                     and entry.get("fy") == previous_fiscal_year
                     and entry.get("fp") == fiscal_period
                     and isinstance(accession, str)
@@ -206,7 +232,7 @@ def find_prior_year_quarter(
 
     if not metric_votes:
         raise SecError(
-            f"No prior-year {fiscal_period} 10-Q evidence was found for "
+            f"No prior-year {fiscal_period} {current.form} evidence was found for "
             f"fiscal year {previous_fiscal_year}."
         )
     ranked = sorted(
@@ -216,10 +242,13 @@ def find_prior_year_quarter(
     )
     best_accession, supporting_metrics = ranked[0]
     best_score = len(supporting_metrics)
-    if best_score < 2:
+    available_current_duration_metrics = {
+        fact.key for fact in current.facts if fact.period_type == "duration"
+    }
+    minimum_support = min(2, len(available_current_duration_metrics))
+    if minimum_support == 0 or best_score < minimum_support:
         raise SecError(
-            "Prior-year quarter matching was not supported by at least two "
-            "independent duration metrics."
+            "Prior-year filing matching lacks sufficient independent duration evidence."
         )
     if len(ranked) > 1 and len(ranked[1][1]) == best_score:
         raise SecError("Prior-year quarter matching was ambiguous across SEC filings.")
@@ -230,6 +259,17 @@ def find_prior_year_quarter(
         fiscal_period=fiscal_period,
         supporting_metrics=tuple(sorted(supporting_metrics)),
     )
+
+
+def find_prior_year_quarter(
+    fetch_json: JsonFetcher,
+    current: FinancialExtraction,
+) -> QuarterMatch:
+    """Backward-compatible same-fiscal-quarter matcher."""
+
+    if current.form != "10-Q":
+        raise SecError("Prior-year quarter matching requires a Form 10-Q.")
+    return find_prior_year_filing(fetch_json, current)
 
 
 def extract_financials(

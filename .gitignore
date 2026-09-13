@@ -6,6 +6,7 @@
 /.pnpm-home/
 /.pnpm-store/
 /.pnpm-user/
+**/.local-config/
 /2026-08-30/
 
 # Local data and generated work

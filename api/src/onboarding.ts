@@ -101,9 +101,6 @@ export async function createAnalysisJob(
 ): Promise<Response> {
   const ticker = cleanTicker(tickerValue);
   if (!ticker) return apiError(400, "INVALID_TICKER", "Ticker format is invalid.");
-  if (env.ONBOARDING_TEST_TICKER && ticker !== cleanTicker(env.ONBOARDING_TEST_TICKER)) {
-    return apiError(503, "CONTROLLED_ROLLOUT", "Ticker analysis is temporarily limited during production verification.");
-  }
   const blocked = await protect(request, env, verifyChallenge, `analyze:${ticker}`);
   if (blocked) return blocked;
 
@@ -162,9 +159,6 @@ export async function retryAnalysisJob(
   if (blocked) return blocked;
   const existing = await first(env.DB, `${JOB_SELECT} WHERE job_id = ?`, [jobId]);
   if (!existing) return apiError(404, "JOB_NOT_FOUND", "Analysis job was not found.");
-  if (env.ONBOARDING_TEST_TICKER && existing.ticker !== cleanTicker(env.ONBOARDING_TEST_TICKER)) {
-    return apiError(503, "CONTROLLED_ROLLOUT", "Ticker analysis is temporarily limited during production verification.");
-  }
   if (existing.status !== "failed") return apiError(409, "JOB_NOT_RETRYABLE", "Only failed analysis jobs can be retried.");
   if (Number(existing.attempt_count) >= Number(existing.max_attempts)) {
     return apiError(409, "RETRY_LIMIT_REACHED", "This analysis request has reached its retry limit.");

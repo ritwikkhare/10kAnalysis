@@ -474,8 +474,9 @@ cd ..
 `GET /api/v1/tickers?q=AMZN&limit=10` searches ticker and company name, prioritizes
 exact and prefix matches, and returns directory provenance plus availability. An
 empty query still returns the analyzed-company list used by the dashboard shortcuts.
-Directory search responses use browser and edge cache headers, validate bounded
-input, and are protected by a Cloudflare rate-limit binding set to 60 requests per
+Directory rows are cached persistently in D1, while joined search responses use
+`no-store` so a newly completed company becomes available immediately. Search input
+is bounded and protected by a Cloudflare rate-limit binding set to 60 requests per
 minute per connecting IP. A directory-only company detail request returns the clear
 `COMPANY_NOT_ANALYZED` error instead of pretending that filing data exists.
 
@@ -561,8 +562,85 @@ ignored by Git. Never put the Turnstile secret in the website environment.
 
 After explicit approval, migration 0004, the Queue and dead-letter queue, production
 Turnstile widget, API, and website were deployed. Existing companies, filings, and
-evidence links were preserved. The API remains fail-closed while the dispatch
-workflow and repository secrets are configured. Production activation uses a
-single-ticker rollout gate for the first controlled test; the gate is removed only
-after the ticker reaches `completed` or a safely recorded `failed` state. No
-recurring schedule is configured.
+evidence links were preserved. Turnstile, queue delivery, duplicate prevention,
+bounded retries, rate limits, and failure logging remain active. No recurring
+schedule is configured.
+
+## Stage 3, Step 7C: generalized 10-K/10-Q analysis
+
+Step 7C removes the pilot-company assumptions from the local processing path. It is
+designed for an SEC directory ticker whose issuer has a usable standard 10-K and
+10-Q history. The pipeline now:
+
+- resolves the official ticker and CIK and classifies unsupported filing histories;
+- ignores 10-K/A and 10-Q/A as separate fiscal periods and loads SEC archived
+  submission pages when a comparison accession has left the recent list;
+- resolves revenue through an ordered, evidence-preserving set of common US-GAAP
+  concepts, rejects ambiguous duplicate contexts, and leaves unsupported facts
+  missing instead of estimating them;
+- selects annual and quarterly comparison accessions by the SEC fiscal-year and
+  fiscal-period identity in Company Facts, including same-quarter prior-year 10-Qs;
+- calculates a ratio only when both cited inputs are present and the denominator is
+  nonzero;
+- recognizes common Item 1A heading and boundary variations, ignores table-of-
+  contents matches, and keeps passage-level SEC links; and
+- validates the complete schema/evidence graph before producing idempotent D1 SQL.
+
+Ticker search availability is deliberately uncached at the API and browser layers.
+When a job completes, the website reloads the company list and opens the new
+dashboard immediately, so it does not remain labeled **Analysis required**.
+
+### The exact boundary of “any ticker”
+
+“Any ticker” means any company present in the official SEC ticker directory that
+has sufficiently complete, standard 10-K and 10-Q filings and filing-matched
+US-GAAP facts. It does **not** mean that every SEC directory entry can be forced
+into this analysis. Foreign private issuers using 20-F/40-F and 6-K, registered
+funds using N-CSR/N-PORT, inactive companies, companies without both standard
+forms, and companies without enough prior-year history are reported as unsupported
+or insufficient. FilingLens never substitutes an unrelated filing, adds financial
+components, or invents a missing value.
+
+Some supported companies will expose fewer facts, ratios, or comparisons than
+others. That is an honest data result: a missing metric remains visible through an
+empty state or warning, and dependent calculations are skipped. Item 1A analysis
+also requires extractable annual risk text in both matched 10-K documents.
+
+### Local-only Step 7C verification
+
+No production SEC onboarding or Cloudflare resource is needed for the test suite.
+The tests use SEC-shaped response fixtures, mocked queue and Turnstile behavior, an
+isolated D1 database, and the local Worker/site test runtimes:
+
+```powershell
+$python = "C:\Users\hello\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+$env:PYTHONPATH = "src"
+& $python -m unittest discover -s tests -v
+
+cd api
+$env:XDG_CONFIG_HOME = "$PWD\.local-config"
+$env:WRANGLER_LOG = "none"
+pnpm test
+pnpm run check
+pnpm run deploy:dry
+
+cd ..\site
+.\node_modules\.bin\vitest.cmd run
+pnpm run lint
+pnpm run build
+cd ..
+```
+
+The generalized onboarding fixture test processes COST, JPM, BA, DUK, and CRM as
+five previously unavailable examples spanning retail, banking, industrials,
+utilities, and software. It covers five revenue concept choices, annual and
+same-fiscal-quarter comparisons, missing-data-safe ratios, Item 1A changes,
+clickable SEC citations, schema validation, deterministic D1 import, and complete
+dashboard data. Separate tests cover amendments, archived submission pages,
+foreign issuers, funds, inactive issuers, insufficient form histories, duplicate
+requests, retries, rate limits, queue handling, and immediate availability refresh.
+
+Step 7C is local-only until a separate approval. A later production rollout would
+require approval to deploy the API Worker and website. No new D1 migration, Queue,
+Turnstile setting, secret, or recurring schedule is required by these changes; a
+production smoke-test onboarding request would also require separate approval.

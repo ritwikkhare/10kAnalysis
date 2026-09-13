@@ -112,6 +112,27 @@ def build_onboarding_import(
             diagnostic=detail,
         ), False
 
+    capability_check = getattr(client, "filing_capability", None)
+    if callable(capability_check):
+        capability, detail = capability_check(cik)
+        if capability != "supported":
+            public_message = {
+                "foreign_issuer": "This issuer files 20-F/40-F or 6-K reports, which this 10-K/10-Q analysis does not support.",
+                "fund": "This ticker is an investment fund without the standard 10-K/10-Q reports required for this analysis.",
+                "inactive": "This SEC company has no recent standard filing history to analyze.",
+                "insufficient_forms": "This company does not have the usable 10-K and 10-Q filing history required for full analysis.",
+            }.get(capability, "This company is not supported by the standard 10-K/10-Q analysis pipeline.")
+            manifest = {
+                "job_id": job_id, "ticker": ticker, "company_name": company_name,
+                "status": "unsupported", "message": public_message,
+                "unsupported_reason": capability,
+            }
+            return manifest, job_update_sql(
+                job_id, status="unsupported", message=public_message,
+                error_code=f"UNSUPPORTED_{capability.upper()}", failure_stage="discovery",
+                diagnostic=detail,
+            ), False
+
     run = execute_refresh(
         client,
         tickers=(ticker,),
