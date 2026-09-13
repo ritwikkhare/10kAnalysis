@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from scripts.onboard_company import build_onboarding_import, job_update_sql
+from scripts.onboard_company import build_onboarding_import, diagnostic_summary, job_update_sql
 
 
 JOB_ID = "11111111-1111-4111-8111-111111111111"
@@ -32,6 +32,24 @@ class ForeignIssuerClient(FakeClient):
 
 
 class OnboardingTests(unittest.TestCase):
+    def test_console_diagnostic_includes_the_failed_target_reason(self) -> None:
+        summary = diagnostic_summary({
+            "job_id": JOB_ID,
+            "status": "failed",
+            "refresh": {
+                "results": [{
+                    "form": "10-K",
+                    "accession_number": "0000909832-25-000111",
+                    "status": "failed",
+                    "stage": "processing",
+                    "error_code": "PIPELINEEXECUTIONERROR",
+                    "message": "Pipeline exited with status 1: Error: exact XBRL failure",
+                }],
+            },
+        })
+        self.assertEqual(summary["failures"][0]["form"], "10-K")
+        self.assertIn("exact XBRL failure", summary["failures"][0]["message"])
+
     @staticmethod
     def _valid_runner(ticker: str, form: str, root: Path, user_agent: str) -> int:
         accession = "0001234567-26-000001" if form == "10-K" else "0001234567-26-000002"

@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts.refresh_filings import (
+    PipelineExecutionError,
+    default_pipeline_runner,
     execute_refresh,
     read_known_accessions,
     render_import_sql,
@@ -36,6 +40,23 @@ class FakeDiscoveryClient:
 
 
 class RefreshTests(unittest.TestCase):
+    def test_default_runner_preserves_the_exact_cli_failure(self) -> None:
+        def failed_cli(_arguments: list[str]) -> int:
+            print("Error: no prior-year Q2 filing matched", file=sys.stderr)
+            return 1
+
+        with patch("sec_filing.cli.main", side_effect=failed_cli):
+            with self.assertRaisesRegex(
+                PipelineExecutionError,
+                "no prior-year Q2 filing matched",
+            ):
+                default_pipeline_runner(
+                    "COST",
+                    "10-Q",
+                    Path("unused"),
+                    "FilingLens test@example.com",
+                )
+
     @staticmethod
     def _write_metadata(output: Path, *, accession: str, form: str) -> None:
         official_url = "https://www.sec.gov/Archives/edgar/data/1/test.htm"

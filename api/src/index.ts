@@ -1,5 +1,6 @@
 import { all, evidenceFor, first, parseJsonColumn, type Row } from "./db.js";
 import { apiError, cleanAccession, cleanSearchQuery, cleanTicker, json, pagination } from "./http.js";
+import { enforceTickerSearchLimit } from "./rate_limit.js";
 import {
   analysisJobStatus,
   consumeAnalysisQueue,
@@ -91,21 +92,6 @@ async function tickerSearch(request: Request, env: Env): Promise<Response> {
     },
     200,
     { "cache-control": TICKER_CACHE_CONTROL },
-  );
-}
-
-export async function enforceTickerSearchLimit(
-  request: Request,
-  limiter: RateLimit,
-): Promise<Response | null> {
-  const clientKey = request.headers.get("CF-Connecting-IP") ?? "unknown-client";
-  const outcome = await limiter.limit({ key: `ticker-search:${clientKey}` });
-  if (outcome.success) return null;
-  return apiError(
-    429,
-    "RATE_LIMITED",
-    "Ticker search is temporarily rate limited. Please wait a minute and try again.",
-    { "retry-after": "60" },
   );
 }
 
@@ -279,7 +265,7 @@ async function collectionOrMissing(accession: string, name: string, rows: Row[],
   return json({ accession_number: accession, [name]: rows, evidence });
 }
 
-export async function handle(request: Request, env: Env): Promise<Response> {
+async function handle(request: Request, env: Env): Promise<Response> {
   const parts = route(new URL(request.url).pathname);
   if (parts[0] !== "api" || parts[1] !== "v1") return apiError(404, "NOT_FOUND", "Use an /api/v1 endpoint.");
   if (request.method === "OPTIONS") {

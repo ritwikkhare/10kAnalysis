@@ -606,7 +606,7 @@ others. That is an honest data result: a missing metric remains visible through 
 empty state or warning, and dependent calculations are skipped. Item 1A analysis
 also requires extractable annual risk text in both matched 10-K documents.
 
-### Local-only Step 7C verification
+### Step 7C verification and processor synchronization
 
 No production SEC onboarding or Cloudflare resource is needed for the test suite.
 The tests use SEC-shaped response fixtures, mocked queue and Turnstile behavior, an
@@ -640,7 +640,21 @@ dashboard data. Separate tests cover amendments, archived submission pages,
 foreign issuers, funds, inactive issuers, insufficient form histories, duplicate
 requests, retries, rate limits, queue handling, and immediate availability refresh.
 
-Step 7C is local-only until a separate approval. A later production rollout would
-require approval to deploy the API Worker and website. No new D1 migration, Queue,
-Turnstile setting, secret, or recurring schedule is required by these changes; a
-production smoke-test onboarding request would also require separate approval.
+The Step 7C API and website were deployed after explicit approval on September 7,
+2026. The first controlled COST request then exposed a source synchronization issue:
+the Worker dispatched GitHub Actions correctly, but the generalized Python processor
+still existed only in the local checkout. The September 13 reconciliation preserves
+the GitHub Step 7A/7B history, merges the complete Step 7C processor into `main`, and
+keeps the working Turnstile render fix.
+
+The default pipeline runner now captures the precise bounded CLI error instead of
+replacing it with only an exit status. Failed target details are stored in the
+private diagnostic record, included in the retained manifest, and printed in the
+GitHub Action log; the public API continues to return a safe generic message.
+
+A live local-only COST run completed both forms using official SEC data: the current
+and prior-year 10-K, Item 1A comparison, and the current and same-fiscal-quarter
+prior-year 10-Q. The resulting schema and evidence graph passed validation and
+generated idempotent import SQL. This test did not contact production D1 or retry the
+failed production job. No new migration, Queue, Turnstile setting, secret, deployment,
+or recurring schedule is part of this reconciliation.

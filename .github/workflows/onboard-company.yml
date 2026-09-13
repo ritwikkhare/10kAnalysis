@@ -1,8 +1,8 @@
 name: Analyze requested SEC company
 
-# Stage 3 Step 7B is intentionally not active in production yet. This event is
-# inert until the API Queue binding, Worker secrets, migration, and feature flag
-# are deployed after explicit approval.
+# The API queue dispatches this event after Turnstile, rate-limit, duplicate,
+# and company-directory checks. The checked-out revision is the authoritative
+# filing processor, so Step 7C pipeline changes must be pushed before rollout.
 on:
   repository_dispatch:
     types: [filinglens_onboard_company]
@@ -86,6 +86,10 @@ jobs:
           path: work/onboarding/manifest.json
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Show exact validation or filing failure
+        if: always() && hashFiles('work/onboarding/manifest.json') != ''
+        run: python -m json.tool work/onboarding/manifest.json
 
       - name: Fail visibly after safely recording the job state
         if: steps.process.outcome != 'success'

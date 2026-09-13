@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Iterable
+from contextlib import redirect_stderr
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -28,6 +30,19 @@ class DiscoveryClient(Protocol):
 
 
 PipelineRunner = Callable[[str, str, Path, str], int]
+
+
+class PipelineExecutionError(RuntimeError):
+    """A filing pipeline failure with its bounded, user-safe CLI diagnostic."""
+
+
+def _bounded_diagnostic(value: str, *, limit: int = 2000) -> str:
+    """Flatten CLI stderr for durable logs without allowing unbounded output."""
+
+    compact = " ".join(value.split())
+    if not compact:
+        return "No diagnostic text was produced."
+    return compact[:limit]
 
 
 @dataclass(frozen=True)
@@ -108,7 +123,17 @@ def default_pipeline_runner(
     ]
     if form == "10-K":
         arguments.append("--compare-risks")
-    return cli_main(arguments)
+    stderr = StringIO()
+    with redirect_stderr(stderr):
+        exit_code = cli_main(arguments)
+    diagnostic = stderr.getvalue()
+    if exit_code != 0:
+        raise PipelineExecutionError(
+            f"Pipeline exited with status {exit_code}: {_bounded_diagnostic(diagnostic)}"
+        )
+    if diagnostic:
+        print(diagnostic, file=sys.stderr, end="")
+    return exit_code
 
 
 def execute_refresh(

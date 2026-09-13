@@ -230,6 +230,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def diagnostic_summary(manifest: dict[str, object]) -> dict[str, object]:
+    """Return a bounded console summary, including exact failed target details."""
+
+    summary = {
+        key: value
+        for key, value in manifest.items()
+        if key not in {"refresh"}
+    }
+    refresh = manifest.get("refresh")
+    if not isinstance(refresh, dict):
+        return summary
+    results = refresh.get("results")
+    if not isinstance(results, (list, tuple)):
+        return summary
+    failures: list[dict[str, object]] = []
+    for result in results:
+        if not isinstance(result, dict) or result.get("status") != "failed":
+            continue
+        failures.append({
+            key: result.get(key)
+            for key in ("form", "accession_number", "stage", "error_code", "message")
+        })
+    if failures:
+        summary["failures"] = failures
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not JOB_ID.fullmatch(args.job_id) or not TICKER.fullmatch(args.ticker) or not re.fullmatch(r"\d{10}", args.cik):
@@ -269,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     args.sql_output.write_text(sql, encoding="utf-8")
     args.manifest.parent.mkdir(parents=True, exist_ok=True)
     args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({key: value for key, value in manifest.items() if key != "refresh"}, indent=2))
+    print(json.dumps(diagnostic_summary(manifest), indent=2))
     return 0 if success else 1
 
 

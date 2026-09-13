@@ -5,7 +5,7 @@ import refreshMigrationSql from "../migrations/0002_refresh_status.sql?raw";
 import directoryMigrationSql from "../migrations/0003_sec_company_directory.sql?raw";
 import analysisMigrationSql from "../migrations/0004_analysis_jobs.sql?raw";
 import { evidenceFor } from "../src/db.js";
-import { enforceTickerSearchLimit } from "../src/index.js";
+import { enforceTickerSearchLimit } from "../src/rate_limit.js";
 import {
   analysisJobStatus,
   consumeAnalysisQueue,
