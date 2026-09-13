@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local-only verification. .dev.vars is ignored by Git.
+ONBOARDING_ENABLED=true
+TURNSTILE_SECRET=replace-with-local-widget-secret
+TURNSTILE_HOSTNAMES=localhost,127.0.0.1
+GITHUB_ONBOARDING_TOKEN=replace-with-fine-grained-repository-dispatch-token

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -24,6 +25,22 @@ TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
 SUPPORTED_FORMS = ("10-K", "10-Q")
+FOREIGN_ISSUER_FORMS = frozenset({"20-F", "40-F", "6-K"})
+FUND_FORMS = frozenset({"N-CSR", "N-CSRS", "N-PORT-P", "N-PORT", "N-CEN"})
+
+
+def classify_filing_forms(forms: set[str]) -> tuple[str, str]:
+    """Return a safe public capability class for an SEC form history."""
+
+    if set(SUPPORTED_FORMS).issubset(forms):
+        return "supported", "Standard 10-K and 10-Q filings are available."
+    if forms & FOREIGN_ISSUER_FORMS:
+        return "foreign_issuer", "This issuer uses 20-F/40-F and 6-K forms rather than the required 10-K/10-Q pair."
+    if forms & FUND_FORMS:
+        return "fund", "This company record uses investment-fund forms rather than standard 10-K/10-Q reports."
+    if not forms:
+        return "inactive", "No recent SEC filing history is available for this company."
+    return "insufficient_forms", "Both a standard 10-K and 10-Q are required, but the SEC history does not contain that usable pair."
 
 
 class SecError(RuntimeError):
@@ -73,6 +90,7 @@ class SecClient:
         self.min_request_interval = min_request_interval
         self._transport = transport or _default_transport
         self._last_request_at = 0.0
+        self._json_cache: dict[str, dict[str, Any]] = {}
 
     def _fetch_bytes(self, url: str) -> bytes:
         elapsed = time.monotonic() - self._last_request_at
@@ -98,12 +116,16 @@ class SecClient:
         return result
 
     def _fetch_json(self, url: str) -> dict[str, Any]:
+        cached = self._json_cache.get(url)
+        if cached is not None:
+            return cached
         try:
             value = json.loads(self._fetch_bytes(url))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise SecError(f"SEC returned invalid JSON for {url}") from exc
         if not isinstance(value, dict):
             raise SecError(f"SEC returned an unexpected JSON shape for {url}")
+        self._json_cache[url] = value
         return value
 
     def fetch_json(self, url: str) -> dict[str, Any]:
@@ -124,6 +146,12 @@ class SecClient:
     def latest_filing(self, cik: int, *, form: str = "10-K") -> dict[str, str]:
         return self.recent_filings(cik, form=form, limit=1)[0]
 
+    def filing_capability(self, cik: int) -> tuple[str, str]:
+        """Classify whether the SEC filer has the standard FilingLens form pair."""
+
+        forms = {item["form"] for item in self._filing_records(cik)}
+        return classify_filing_forms(forms)
+
     def recent_filings(
         self,
         cik: int,
@@ -143,6 +171,9 @@ class SecClient:
         filings = self._filing_records(cik, form=normalized_form)
         if len(filings) >= limit:
             return filings[:limit]
+        filings = self._filing_records(cik, form=normalized_form, include_archives=True)
+        if len(filings) >= limit:
+            return filings[:limit]
         if not filings:
             raise SecError(f"No {normalized_form} filing was found for this company.")
         raise SecError(
@@ -154,11 +185,13 @@ class SecClient:
         cik: int,
         *,
         form: str | None = None,
+        include_archives: bool = False,
     ) -> list[dict[str, str]]:
         """Return normalized recent submission rows, optionally filtered by form."""
 
         submission = self._fetch_json(SUBMISSIONS_URL.format(cik=cik))
-        recent = submission.get("filings", {}).get("recent", {})
+        filings_node = submission.get("filings", {})
+        recent = filings_node.get("recent", {})
         required = (
             "form",
             "filingDate",
@@ -176,12 +209,32 @@ class SecClient:
                     filings.append({key: str(recent[key][index]) for key in required})
                 except IndexError as exc:
                     raise SecError("SEC submissions response has inconsistent columns.") from exc
+        # Older comparison filings can be moved out of ``recent`` into the
+        # paginated submission files advertised by the SEC.  Include those
+        # records so a fiscal-prior-year match does not fail merely because a
+        # company files frequently.
+        archive_files = filings_node.get("files", [])
+        if include_archives and isinstance(archive_files, list):
+            for descriptor in archive_files:
+                name = descriptor.get("name") if isinstance(descriptor, dict) else None
+                if not isinstance(name, str) or not re.fullmatch(r"CIK\d+-submissions-\d{3}\.json", name):
+                    continue
+                archived = self._fetch_json(f"https://data.sec.gov/submissions/{name}")
+                if not all(isinstance(archived.get(key), list) for key in required):
+                    raise SecError(f"SEC archived submissions file {name} is malformed.")
+                for index, filing_form in enumerate(archived["form"]):
+                    if form is None or filing_form == form:
+                        try:
+                            filings.append({key: str(archived[key][index]) for key in required})
+                        except IndexError as exc:
+                            raise SecError(f"SEC archived submissions file {name} has inconsistent columns.") from exc
+        filings.sort(key=lambda item: (item["filingDate"], item["accessionNumber"]), reverse=True)
         return filings
 
     def filing_by_accession(self, cik: int, accession_number: str) -> dict[str, str]:
         """Find one exact recent filing row by its immutable accession number."""
 
-        for filing in self._filing_records(cik):
+        for filing in self._filing_records(cik, include_archives=True):
             if filing["accessionNumber"] == accession_number:
                 return filing
         raise SecError(

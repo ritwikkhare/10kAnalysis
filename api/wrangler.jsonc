@@ -14,5 +14,46 @@
       "database_id": "c6c097d1-51f7-4d45-b938-c2c7e16f4950",
       "migrations_dir": "migrations"
     }
+  ],
+  "vars": {
+    "GITHUB_REPOSITORY": "ritwikkhare/10kAnalysis",
+    "TURNSTILE_ACTION": "analyze_ticker",
+    "TURNSTILE_HOSTNAMES": "filinglens-apple-sec.ritwikkhare10k.workers.dev"
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "ANALYSIS_QUEUE",
+        "queue": "filinglens-analysis"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "filinglens-analysis",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "retry_delay": 30,
+        "dead_letter_queue": "filinglens-analysis-dlq"
+      }
+    ]
+  },
+  "ratelimits": [
+    {
+      "name": "TICKER_SEARCH_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    },
+    {
+      "name": "ONBOARDING_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 3,
+        "period": 60
+      }
+    }
   ]
 }

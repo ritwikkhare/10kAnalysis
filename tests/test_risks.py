@@ -27,6 +27,26 @@ def metadata(accession: str, report_date: str, url: str) -> FilingMetadata:
 
 
 class RiskComparisonTests(unittest.TestCase):
+    def test_ignores_table_of_contents_item_1a_and_accepts_item_2_boundary(self) -> None:
+        html = """
+        <table><tr><td>Item 1A. Risk Factors</td><td>12</td></tr></table>
+        <div>Item 1B. Unresolved Staff Comments</div>
+        <div id="real-risk">ITEM 1A: RISK FACTORS</div>
+        <p>A substantial operating risk passage explains supplier, demand, legal, and technology uncertainty for investors.</p>
+        <div>Item 2. Properties</div>
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "filing.html"
+            path.write_text(html, encoding="utf-8")
+            result, _ = extract_risk_section(
+                path,
+                metadata("0000320193-25-000079", "2025-09-27", "https://www.sec.gov/Archives/current.htm"),
+                root,
+            )
+            self.assertEqual(len(result.passages), 1)
+            self.assertIn("substantial operating risk", result.passages[0].text)
+
     def test_extracts_item_1a_and_classifies_evidence_linked_changes(self) -> None:
         current_html = """
         <html><body>
@@ -87,6 +107,24 @@ class RiskComparisonTests(unittest.TestCase):
             validate_document(
                 json.loads(output_path.read_text()),
                 expected_record_type="risk_changes",
+            )
+            risk_changes_document = json.loads(output_path.read_text())
+            filing_evidence = {
+                item["evidence_id"]: item
+                for item in risk_changes_document["evidence"]
+                if item["evidence_type"] == "filing_document"
+            }
+            self.assertEqual(
+                filing_evidence[
+                    "AAPL-0000320193-25-000079-filing-document"
+                ]["label"],
+                "Apple Inc. 10-K",
+            )
+            self.assertEqual(
+                filing_evidence[
+                    "AAPL-0000320193-24-000123-filing-document"
+                ]["label"],
+                "Apple Inc. 10-K",
             )
 
             change_types = [item.change_type for item in result.changes]

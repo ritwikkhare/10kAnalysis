@@ -224,7 +224,7 @@ The client waits between requests and uses far fewer than the SEC's current limi
 
 ## Stage 3, Step 4: local D1 API
 
-The new API is isolated in `api/`; the existing Apple dashboard remains in `site/` and
+The data API is isolated in `api/`; the existing Apple dashboard remains in `site/` and
 is not changed by this step. The API uses a separate Worker name,
 `filinglens-sec-api`, and a separate D1 database name, `filinglens-sec-data`.
 
@@ -341,7 +341,7 @@ pnpm dev
 ```
 
 Open the local URL shown in the terminal (normally <http://localhost:3000>). Keep the
-terminal running while using the site. `pnpm check` runs ESLint, seven frontend/API-
+terminal running while using the site. `pnpm check` runs ESLint, nine frontend/API-
 client tests, and a production build.
 
 The deployed API is the default data source. To test against another compatible API,
@@ -430,8 +430,217 @@ will require these GitHub Actions secrets before a manually approved production 
 - `CLOUDFLARE_ACCOUNT_ID`; and
 - `SEC_USER_AGENT`, containing the project name and a real contact email address.
 
-The additive D1 migration, read-only API, and website status UI were deployed and
+The additive D1 migration, data API, and website status UI were deployed and
 verified on September 1, 2026 after explicit approval. The deployment preserved all
 existing pilot filings. The refresh workflow itself remains manual-only: configure
 the three GitHub Actions secrets above, run and inspect one manual refresh, and only
 then add a recurring schedule after separate explicit approval.
+
+## Stage 3, Step 7A: universal SEC ticker discovery
+
+Step 7A separates **finding a public company** from **analyzing its filings**. The
+search API can now query the SEC's official ticker-to-CIK directory instead of only
+the four pilot companies. Each result is labeled `available` when FilingLens already
+has processed data in D1, or `requires_analysis` when it is only a directory match.
+Selecting a directory-only result never downloads or processes a filing.
+
+The source is the SEC's official
+<https://www.sec.gov/files/company_tickers.json> file. The synchronization script:
+
+- requires an honest `SEC_USER_AGENT` containing a contact email;
+- validates every ticker, CIK, and company name before creating SQL;
+- caches the raw response and SHA-256 metadata under the ignored `data/sec/` folder;
+- sends `If-None-Match` and `If-Modified-Since` on later runs so an unchanged file is
+  not downloaded again; and
+- creates a batched, idempotent D1 import under the ignored `work/` folder; Wrangler's
+  managed remote import provides rollback if execution fails.
+
+From the project folder, refresh the local directory with:
+
+```powershell
+$env:SEC_USER_AGENT = "FilingLens your-email@example.com"
+.venv\Scripts\python.exe scripts\sync_sec_tickers.py
+```
+
+Apply the new schema and generated directory to a local D1 database only:
+
+```powershell
+cd api
+pnpm exec wrangler d1 migrations apply DB --local
+pnpm exec wrangler d1 execute DB --local --file ..\work\sec-directory\import.sql
+cd ..
+```
+
+`GET /api/v1/tickers?q=AMZN&limit=10` searches ticker and company name, prioritizes
+exact and prefix matches, and returns directory provenance plus availability. An
+empty query still returns the analyzed-company list used by the dashboard shortcuts.
+Directory rows are cached persistently in D1, while joined search responses use
+`no-store` so a newly completed company becomes available immediately. Search input
+is bounded and protected by a Cloudflare rate-limit binding set to 60 requests per
+minute per connecting IP. A directory-only company detail request returns the clear
+`COMPANY_NOT_ANALYZED` error instead of pretending that filing data exists.
+
+Local verification covers directory download/cache behavior, malformed source data,
+idempotent SQL, the complete D1 import, API availability labels and rate limiting,
+website discovery states, accessibility-oriented result labels, linting, type checks,
+and a production website build. The additive migration, 10,391-entry directory,
+API search, and website interface were deployed on September 1, 2026 after explicit
+approval. The deployment preserved the four analyzed companies and 13 processed
+filings and did not process any new company filings.
+
+## Stage 3, Step 7B: asynchronous company onboarding
+
+Step 7B is implemented and its production infrastructure and interface have been
+deployed behind a fail-closed feature flag. A directory-only search result now has an “Analyze this
+ticker” flow. The browser submits a one-time Cloudflare Turnstile token, receives a
+job immediately, and polls its status without holding the page open or blocking the
+existing dashboard.
+
+The request path is intentionally split across environments:
+
+1. The API verifies Turnstile server-side, applies a separate three-requests-per-
+   minute Cloudflare rate limit, validates the ticker against the synchronized SEC
+   directory, and inserts one `queued` D1 job.
+2. A Cloudflare Queue provides at-least-once delivery. The consumer is idempotent,
+   handles every message explicitly, and dispatches the job to the Python-capable
+   GitHub Actions runner. Duplicate live requests return the existing job.
+3. `scripts/onboard_company.py` resolves the ticker and CIK again, processes the
+   latest 10-K and 10-Q, and validates every versioned document and evidence edge.
+4. Only a completely valid result produces company/filing import SQL. The SQL uses
+   stable keys and `INSERT OR IGNORE`; retries cannot duplicate or delete data.
+   Any failure publishes only a safe job status and a private diagnostic record.
+
+Migration `0004_analysis_jobs.sql` adds `analysis_jobs` and
+`analysis_job_failures`. Public jobs use `queued`, `processing`, `completed`,
+`failed`, or `unsupported`; failed jobs permit a bounded retry until
+`max_attempts` is reached. A partial company result is never published.
+
+### Step 7B API contract
+
+```text
+POST /api/v1/companies/{ticker}/analysis
+GET  /api/v1/analysis-jobs/{job_id}
+POST /api/v1/analysis-jobs/{job_id}/retry
+```
+
+POST bodies contain `{ "turnstile_token": "..." }`. Turnstile tokens are checked
+only by the Worker and are single-use. The API requires a successful verification,
+the exact `analyze_ticker` action, and an allowed hostname. It fails closed when the
+challenge service or configuration is unavailable. Job IDs contain no secret data,
+and the status endpoint never returns diagnostic messages or credentials.
+
+### Local verification
+
+The checked-in Wrangler configuration omits `ONBOARDING_ENABLED`, and the Worker
+fails closed unless it is explicitly set to `true`, so an accidental deployment
+cannot activate processing. Automated tests call the same
+handlers with controlled local bindings and mocked challenge/dispatch responses.
+
+From the project folder:
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+cd api
+pnpm install
+pnpm run types
+pnpm test
+pnpm run check
+pnpm run deploy:dry
+cd ..\site
+pnpm install
+pnpm check
+cd ..
+```
+
+For an interactive local UI test, create a Turnstile widget restricted to
+`localhost` and `127.0.0.1` after approval. Copy `api/.dev.vars.example` to
+`api/.dev.vars` and `site/.env.example` to `site/.env.local`, then supply the secret
+only in `.dev.vars` and the public site key only in `.env.local`. Both real files are
+ignored by Git. Never put the Turnstile secret in the website environment.
+
+### Production rollout status
+
+After explicit approval, migration 0004, the Queue and dead-letter queue, production
+Turnstile widget, API, and website were deployed. Existing companies, filings, and
+evidence links were preserved. Turnstile, queue delivery, duplicate prevention,
+bounded retries, rate limits, and failure logging remain active. No recurring
+schedule is configured.
+
+## Stage 3, Step 7C: generalized 10-K/10-Q analysis
+
+Step 7C removes the pilot-company assumptions from the local processing path. It is
+designed for an SEC directory ticker whose issuer has a usable standard 10-K and
+10-Q history. The pipeline now:
+
+- resolves the official ticker and CIK and classifies unsupported filing histories;
+- ignores 10-K/A and 10-Q/A as separate fiscal periods and loads SEC archived
+  submission pages when a comparison accession has left the recent list;
+- resolves revenue through an ordered, evidence-preserving set of common US-GAAP
+  concepts, rejects ambiguous duplicate contexts, and leaves unsupported facts
+  missing instead of estimating them;
+- selects annual and quarterly comparison accessions by the SEC fiscal-year and
+  fiscal-period identity in Company Facts, including same-quarter prior-year 10-Qs;
+- calculates a ratio only when both cited inputs are present and the denominator is
+  nonzero;
+- recognizes common Item 1A heading and boundary variations, ignores table-of-
+  contents matches, and keeps passage-level SEC links; and
+- validates the complete schema/evidence graph before producing idempotent D1 SQL.
+
+Ticker search availability is deliberately uncached at the API and browser layers.
+When a job completes, the website reloads the company list and opens the new
+dashboard immediately, so it does not remain labeled **Analysis required**.
+
+### The exact boundary of “any ticker”
+
+“Any ticker” means any company present in the official SEC ticker directory that
+has sufficiently complete, standard 10-K and 10-Q filings and filing-matched
+US-GAAP facts. It does **not** mean that every SEC directory entry can be forced
+into this analysis. Foreign private issuers using 20-F/40-F and 6-K, registered
+funds using N-CSR/N-PORT, inactive companies, companies without both standard
+forms, and companies without enough prior-year history are reported as unsupported
+or insufficient. FilingLens never substitutes an unrelated filing, adds financial
+components, or invents a missing value.
+
+Some supported companies will expose fewer facts, ratios, or comparisons than
+others. That is an honest data result: a missing metric remains visible through an
+empty state or warning, and dependent calculations are skipped. Item 1A analysis
+also requires extractable annual risk text in both matched 10-K documents.
+
+### Local-only Step 7C verification
+
+No production SEC onboarding or Cloudflare resource is needed for the test suite.
+The tests use SEC-shaped response fixtures, mocked queue and Turnstile behavior, an
+isolated D1 database, and the local Worker/site test runtimes:
+
+```powershell
+$python = "C:\Users\hello\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+$env:PYTHONPATH = "src"
+& $python -m unittest discover -s tests -v
+
+cd api
+$env:XDG_CONFIG_HOME = "$PWD\.local-config"
+$env:WRANGLER_LOG = "none"
+pnpm test
+pnpm run check
+pnpm run deploy:dry
+
+cd ..\site
+.\node_modules\.bin\vitest.cmd run
+pnpm run lint
+pnpm run build
+cd ..
+```
+
+The generalized onboarding fixture test processes COST, JPM, BA, DUK, and CRM as
+five previously unavailable examples spanning retail, banking, industrials,
+utilities, and software. It covers five revenue concept choices, annual and
+same-fiscal-quarter comparisons, missing-data-safe ratios, Item 1A changes,
+clickable SEC citations, schema validation, deterministic D1 import, and complete
+dashboard data. Separate tests cover amendments, archived submission pages,
+foreign issuers, funds, inactive issuers, insufficient form histories, duplicate
+requests, retries, rate limits, queue handling, and immediate availability refresh.
+
+Step 7C is local-only until a separate approval. A later production rollout would
+require approval to deploy the API Worker and website. No new D1 migration, Queue,
+Turnstile setting, secret, or recurring schedule is required by these changes; a
+production smoke-test onboarding request would also require separate approval.

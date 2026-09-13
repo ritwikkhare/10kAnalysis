@@ -18,10 +18,11 @@ from .schema import (
 )
 
 
-ITEM_1A = re.compile(r"^Item\s+1A\.\s*Risk Factors$", re.IGNORECASE)
-ITEM_1B = re.compile(r"^Item\s+1B\.\s*Unresolved Staff Comments", re.IGNORECASE)
+ITEM_1A = re.compile(r"\bItem\s+1A[.\s:–—-]+Risk\s+Factors\b", re.IGNORECASE)
+ITEM_1B = re.compile(r"\bItem\s+1B[.\s:–—-]+", re.IGNORECASE)
+ITEM_2 = re.compile(r"\bItem\s+2[.\s:–—-]+Properties\b", re.IGNORECASE)
 FOOTER = re.compile(r"^.+\|.*Form 10-K\s*\|\s*\d+$", re.IGNORECASE)
-BLOCK_TAGS = {"div", "p", "li"}
+BLOCK_TAGS = {"div", "p", "li", "td"}
 
 
 def _clean_text(value: str) -> str:
@@ -144,27 +145,35 @@ def extract_risk_section(
     parser = _BlockParser()
     parser.feed(html_path.read_text(encoding="utf-8", errors="replace"))
 
-    in_section = False
+    # Filings often repeat Item 1A in the table of contents.  Build every
+    # candidate section and select the substantial one instead of assuming the
+    # first heading is the report body.
+    candidates: list[list[tuple[str, str | None]]] = []
+    raw_passages: list[tuple[str, str | None]] | None = None
     current_anchor: str | None = None
-    raw_passages: list[tuple[str, str | None]] = []
     for block in parser.blocks:
         if block.element_id:
             current_anchor = block.element_id
-        if not in_section:
-            if ITEM_1A.fullmatch(block.text):
-                in_section = True
+        normalized = _clean_text(block.text)
+        if ITEM_1A.search(normalized) and len(normalized) <= 120:
+            raw_passages = []
+            candidates.append(raw_passages)
             continue
-        if ITEM_1B.match(block.text):
-            break
+        if raw_passages is None:
+            continue
+        if (ITEM_1B.search(normalized) or ITEM_2.search(normalized)) and len(normalized) <= 160:
+            raw_passages = None
+            continue
         if (
-            len(block.text) >= 40
-            and not FOOTER.match(block.text)
-            and not ITEM_1A.fullmatch(block.text)
+            len(normalized) >= 40
+            and not FOOTER.match(normalized)
+            and not ITEM_1A.search(normalized)
         ):
-            raw_passages.append((block.text, current_anchor))
+            raw_passages.append((normalized, current_anchor))
 
-    if not in_section:
+    if not candidates:
         raise SecError(f"Could not locate Item 1A in {html_path}.")
+    raw_passages = max(candidates, key=lambda items: sum(len(text) for text, _ in items))
     if not raw_passages:
         raise SecError(f"Item 1A contained no extractable passages in {html_path}.")
 
@@ -402,7 +411,11 @@ def compare_risk_sections(
                     f"{current.ticker}-{current.accession_number}-filing-document"
                 ),
                 evidence_type="filing_document",
-                label=f"Current {current.form}",
+                # Filing-document evidence is shared across metadata, financial,
+                # and risk documents. Keep its definition canonical so merging
+                # independently generated schema files cannot create a false
+                # evidence collision.
+                label=f"{current.company_name} {current.form}",
                 accession_number=current.accession_number,
                 source_url=current.filing_url,
             ),
@@ -411,7 +424,7 @@ def compare_risk_sections(
                     f"{previous.ticker}-{previous.accession_number}-filing-document"
                 ),
                 evidence_type="filing_document",
-                label=f"Previous {previous.form}",
+                label=f"{previous.company_name} {previous.form}",
                 accession_number=previous.accession_number,
                 source_url=previous.filing_url,
             ),
