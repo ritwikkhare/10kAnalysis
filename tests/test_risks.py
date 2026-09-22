@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher as RealSequenceMatcher
 from pathlib import Path
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from sec_filing.client import FilingMetadata
-from sec_filing.risks import compare_risk_sections, extract_risk_section
+from sec_filing.risks import (
+    MAX_APPROXIMATE_CANDIDATES,
+    POSITIONAL_NEIGHBORS,
+    _risk_candidate_pairs,
+    compare_risk_sections,
+    extract_risk_section,
+)
 from sec_filing.schema import validate_document
 
 
@@ -27,6 +35,85 @@ def metadata(accession: str, report_date: str, url: str) -> FilingMetadata:
 
 
 class RiskComparisonTests(unittest.TestCase):
+    def test_nested_blocks_keep_document_order_and_stop_at_item_1b(self) -> None:
+        html = """
+        <html><body>
+          <div><div>Forward-looking statement outside the risk section contains enough text to look like a passage.</div></div>
+          <div id="risk-start"><div><span>Item 1A. Risk Factors</span></div>
+            <div><p>Cybersecurity incidents could interrupt operations, harm customers, and create substantial remediation costs.</p></div>
+            <div id="risk-page"><p>Changing regulations could restrict products and increase compliance costs across important markets.</p></div>
+          </div>
+          <div><div>Item 1B. Unresolved Staff Comments.</div>
+            <p>Management controls and audit material outside Item 1A must never be included in risk passages.</p>
+          </div>
+        </body></html>
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "filing.html"
+            path.write_text(html, encoding="utf-8")
+            result, _ = extract_risk_section(
+                path,
+                metadata(
+                    "0000320193-25-000079",
+                    "2025-09-27",
+                    "https://www.sec.gov/Archives/nested.htm",
+                ),
+                root,
+            )
+
+        self.assertEqual(len(result.passages), 2)
+        combined = " ".join(passage.text for passage in result.passages)
+        self.assertNotIn("Forward-looking", combined)
+        self.assertNotIn("Management controls", combined)
+        self.assertIn("Cybersecurity incidents", combined)
+        self.assertIn("Changing regulations", combined)
+
+    def test_item_1a_cross_reference_does_not_start_a_false_section(self) -> None:
+        html = """
+        <div>Item 1A. Risk Factors.</div>
+        <p>A genuine risk passage describes market disruption and operational uncertainty in sufficient detail.</p>
+        <div>Item 1B. Unresolved Staff Comments.</div>
+        <p>The other uncertainties are detailed in Part I, Item 1A: Risk Factors in this Form 10-K.</p>
+        <p>Management and audit material after that cross-reference must not become a new risk section.</p>
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "filing.html"
+            path.write_text(html, encoding="utf-8")
+            result, _ = extract_risk_section(
+                path,
+                metadata(
+                    "0000320193-25-000079",
+                    "2025-09-27",
+                    "https://www.sec.gov/Archives/reference.htm",
+                ),
+                root,
+            )
+
+        self.assertEqual(len(result.passages), 1)
+        self.assertIn("genuine risk passage", result.passages[0].text)
+
+    def test_large_risk_sections_use_a_bounded_candidate_search(self) -> None:
+        current = [
+            f"scenario{i:04d} supplier demand regulation cybersecurity and liquidity controls changed this year"
+            for i in range(500)
+        ]
+        previous = [
+            f"scenario{i:04d} supplier demand regulation cybersecurity and liquidity controls existed last year"
+            for i in range(500)
+        ]
+        with patch(
+            "sec_filing.risks.SequenceMatcher",
+            side_effect=lambda *args, **kwargs: RealSequenceMatcher(*args, **kwargs),
+        ) as matcher:
+            pairs = _risk_candidate_pairs(
+                current, previous, match_threshold=0.55
+            )
+        self.assertEqual(len({item[1] for item in pairs}), 500)
+        maximum_per_passage = MAX_APPROXIMATE_CANDIDATES + (2 * POSITIONAL_NEIGHBORS + 1)
+        self.assertLessEqual(matcher.call_count, len(current) * maximum_per_passage)
+
     def test_ignores_table_of_contents_item_1a_and_accepts_item_2_boundary(self) -> None:
         html = """
         <table><tr><td>Item 1A. Risk Factors</td><td>12</td></tr></table>

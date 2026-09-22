@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
+from html.parser import HTMLParser
 from pathlib import Path
+import re
 from typing import Any, Protocol
 
-from .client import FilingMetadata, SecError
+from .client import FilingMetadata, SUBMISSIONS_URL, SecError
 from .schema import (
     CompanyReference,
     EvidenceReference,
@@ -38,6 +42,7 @@ METRICS = (
         (
             "RevenueFromContractWithCustomerExcludingAssessedTax",
             "Revenues",
+            "RevenuesNetOfInterestExpense",
             "SalesRevenueNet",
             "SalesRevenueGoodsNet",
             "SalesRevenueServicesNet",
@@ -113,6 +118,183 @@ class QuarterMatch:
 
 class JsonFetcher(Protocol):
     def __call__(self, url: str) -> dict[str, Any]: ...
+
+
+@dataclass
+class _InlineContext:
+    cik: str | None = None
+    start: str | None = None
+    end: str | None = None
+    dimensioned: bool = False
+
+
+@dataclass
+class _InlineFact:
+    concept: str
+    context_ref: str
+    unit_ref: str
+    scale: int
+    sign: str
+    element_id: str | None
+    parts: list[str]
+
+
+class _InlineXbrlParser(HTMLParser):
+    """Collect the small inline-XBRL subset needed for a safe fallback."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.contexts: dict[str, _InlineContext] = {}
+        self.facts: list[_InlineFact] = []
+        self.document_fields: dict[str, str] = {}
+        self._context_id: str | None = None
+        self._context_field: str | None = None
+        self._context_parts: list[str] = []
+        self._fact: _InlineFact | None = None
+        self._document_name: str | None = None
+        self._document_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        lowered = tag.lower()
+        attributes = {key.lower(): value for key, value in attrs}
+        if lowered == "xbrli:context":
+            self._context_id = attributes.get("id")
+            if self._context_id:
+                self.contexts[self._context_id] = _InlineContext()
+            return
+        if self._context_id and lowered in {"xbrli:segment", "xbrli:scenario"}:
+            self.contexts[self._context_id].dimensioned = True
+        if self._context_id and lowered in {
+            "xbrli:identifier", "xbrli:startdate", "xbrli:enddate", "xbrli:instant"
+        }:
+            self._context_field = lowered
+            self._context_parts = []
+            return
+        if lowered == "ix:nonfraction":
+            concept = attributes.get("name") or ""
+            context_ref = attributes.get("contextref") or ""
+            unit_ref = attributes.get("unitref") or ""
+            try:
+                scale = int(attributes.get("scale") or "0")
+            except ValueError:
+                scale = 0
+            self._fact = _InlineFact(
+                concept=concept,
+                context_ref=context_ref,
+                unit_ref=unit_ref,
+                scale=scale,
+                sign=attributes.get("sign") or "",
+                element_id=attributes.get("id"),
+                parts=[],
+            )
+            return
+        if lowered == "ix:nonnumeric":
+            name = attributes.get("name") or ""
+            if name.lower() in {
+                "dei:documentfiscalyearfocus", "dei:documentfiscalperiodfocus"
+            }:
+                self._document_name = name.lower()
+                self._document_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._context_field:
+            self._context_parts.append(data)
+        if self._fact:
+            self._fact.parts.append(data)
+        if self._document_name:
+            self._document_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.lower()
+        if self._context_id and lowered == self._context_field:
+            value = "".join(self._context_parts).strip()
+            context = self.contexts[self._context_id]
+            if lowered == "xbrli:identifier":
+                context.cik = value.zfill(10)
+            elif lowered == "xbrli:startdate":
+                context.start = value
+            else:
+                context.end = value
+            self._context_field = None
+            self._context_parts = []
+        if lowered == "xbrli:context":
+            self._context_id = None
+        if lowered == "ix:nonfraction" and self._fact:
+            self.facts.append(self._fact)
+            self._fact = None
+        if lowered == "ix:nonnumeric" and self._document_name:
+            self.document_fields[self._document_name] = "".join(
+                self._document_parts
+            ).strip()
+            self._document_name = None
+            self._document_parts = []
+
+
+def _inline_amount(fact: _InlineFact) -> int | float | None:
+    text = "".join(fact.parts).strip()
+    if not text or text in {"—", "–", "-"}:
+        return None
+    negative = text.startswith("(") and text.endswith(")")
+    normalized = re.sub(r"[^0-9.\-]", "", text)
+    try:
+        value = Decimal(normalized) * (Decimal(10) ** fact.scale)
+    except (InvalidOperation, ValueError):
+        return None
+    if negative or fact.sign == "-":
+        value = -abs(value)
+    return int(value) if value == value.to_integral_value() else float(value)
+
+
+def _inline_facts(
+    html_path: Path,
+    metadata: FilingMetadata,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return consolidated filing facts when Company Facts omits an accession."""
+
+    if not html_path.exists():
+        return {}
+    parser = _InlineXbrlParser()
+    parser.feed(html_path.read_text(encoding="utf-8", errors="replace"))
+    fiscal_year_text = parser.document_fields.get("dei:documentfiscalyearfocus")
+    fiscal_period = parser.document_fields.get("dei:documentfiscalperiodfocus")
+    try:
+        fiscal_year = int(fiscal_year_text) if fiscal_year_text else None
+    except ValueError:
+        fiscal_year = None
+    output: dict[str, list[dict[str, Any]]] = {}
+    for fact in parser.facts:
+        if not fact.concept.lower().startswith("us-gaap:"):
+            continue
+        if fact.unit_ref.lower() != "usd":
+            continue
+        context = parser.contexts.get(fact.context_ref)
+        if (
+            context is None
+            or context.cik != metadata.cik
+            or context.dimensioned
+            or context.end != metadata.report_date
+        ):
+            continue
+        value = _inline_amount(fact)
+        if value is None:
+            continue
+        concept = fact.concept.split(":", 1)[1]
+        source_url = (
+            f"{metadata.official_url}#{fact.element_id}"
+            if fact.element_id else metadata.official_url
+        )
+        output.setdefault(concept, []).append({
+            "accn": metadata.accession_number,
+            "form": metadata.form,
+            "filed": metadata.filing_date,
+            "start": context.start,
+            "end": context.end,
+            "fy": fiscal_year,
+            "fp": fiscal_period,
+            "val": value,
+            "_source_url": source_url,
+        })
+    return output
 
 
 def _format_usd(value: int | float) -> str:
@@ -231,6 +413,43 @@ def find_prior_year_filing(
             metric_votes.setdefault(accession, set()).add(metric.key)
 
     if not metric_votes:
+        # Combined registrant filings can contain valid inline XBRL while the
+        # SEC Company Facts endpoint has no rows for that accession. Select the
+        # filing nearest the same report date one year earlier; the downloaded
+        # inline facts are still required to prove the same FY/FP identity
+        # before compare_years will accept the pair.
+        submissions = fetch_json(SUBMISSIONS_URL.format(cik=int(current.cik)))
+        recent = submissions.get("filings", {}).get("recent", {})
+        required = ("form", "reportDate", "accessionNumber")
+        if all(isinstance(recent.get(key), list) for key in required):
+            current_date = date.fromisoformat(current.report_date)
+            try:
+                target = current_date.replace(year=current_date.year - 1)
+            except ValueError:  # February 29 has no direct prior-year date.
+                target = current_date.replace(year=current_date.year - 1, day=28)
+            candidates: list[tuple[int, str]] = []
+            for index, form in enumerate(recent["form"]):
+                if form != current.form:
+                    continue
+                try:
+                    accession = str(recent["accessionNumber"][index])
+                    report_date = date.fromisoformat(str(recent["reportDate"][index]))
+                except (IndexError, ValueError):
+                    continue
+                if accession == current.accession_number or report_date >= current_date:
+                    continue
+                distance = abs((report_date - target).days)
+                if distance <= 45:
+                    candidates.append((distance, accession))
+            candidates.sort()
+            if candidates and (len(candidates) == 1 or candidates[0][0] < candidates[1][0]):
+                return QuarterMatch(
+                    accession_number=candidates[0][1],
+                    current_fiscal_year=current_fiscal_year,
+                    previous_fiscal_year=previous_fiscal_year,
+                    fiscal_period=fiscal_period,
+                    supporting_metrics=("validated_report_date_fallback",),
+                )
         raise SecError(
             f"No prior-year {fiscal_period} {current.form} evidence was found for "
             f"fiscal year {previous_fiscal_year}."
@@ -285,9 +504,11 @@ def extract_financials(
     us_gaap = company_facts.get("facts", {}).get("us-gaap", {})
     if not isinstance(us_gaap, dict):
         raise SecError("SEC Company Facts response does not contain us-gaap facts.")
+    inline_us_gaap = _inline_facts(destination / "filing.html", metadata)
 
     extracted: list[FinancialFact] = []
     missing: list[str] = []
+    warnings: list[str] = []
     for metric in METRICS:
         selected_concept: str | None = None
         selected_data: dict[str, Any] | None = None
@@ -295,16 +516,33 @@ def extract_financials(
 
         for concept in metric.concepts:
             concept_data = us_gaap.get(concept)
-            if not isinstance(concept_data, dict):
-                continue
-            usd_entries = concept_data.get("units", {}).get("USD", [])
-            if not isinstance(usd_entries, list):
-                continue
-            entry = _choose_fact(usd_entries, metadata, metric.period_type)
+            usd_entries = (
+                concept_data.get("units", {}).get("USD", [])
+                if isinstance(concept_data, dict) else []
+            )
+            entry = (
+                _choose_fact(usd_entries, metadata, metric.period_type)
+                if isinstance(usd_entries, list) else None
+            )
+            used_inline = False
+            if entry is None:
+                entry = _choose_fact(
+                    inline_us_gaap.get(concept, []), metadata, metric.period_type
+                )
+                used_inline = entry is not None
             if entry is not None:
                 selected_concept = concept
-                selected_data = concept_data
+                selected_data = (
+                    concept_data
+                    if isinstance(concept_data, dict)
+                    else {"label": metric.name}
+                )
                 selected_entry = entry
+                if used_inline:
+                    warnings.append(
+                        f"Used filing-inline XBRL fallback for {metric.name}; "
+                        "SEC Company Facts did not expose a matching accession fact."
+                    )
                 break
 
         if selected_concept is None or selected_data is None or selected_entry is None:
@@ -338,8 +576,9 @@ def extract_financials(
                 accession_number=str(selected_entry["accn"]),
                 filing_url=metadata.official_url,
                 filing_index_url=metadata.filing_index_url,
-                sec_concept_url=COMPANY_CONCEPT_URL.format(
-                    cik=cik, concept=selected_concept
+                sec_concept_url=str(
+                    selected_entry.get("_source_url")
+                    or COMPANY_CONCEPT_URL.format(cik=cik, concept=selected_concept)
                 ),
             )
         )
@@ -347,7 +586,7 @@ def extract_financials(
     if not extracted:
         raise SecError("The filing contained no supported, filing-matched SEC facts.")
 
-    warnings = tuple(
+    warnings.extend(
         f"Unsupported or missing filing-matched fact: {name}."
         for name in missing
     )
@@ -362,7 +601,7 @@ def extract_financials(
         extracted_at=datetime.now(UTC).isoformat(),
         source_api_url=source_api_url,
         missing_metrics=tuple(missing),
-        warnings=warnings,
+        warnings=tuple(warnings),
         facts=tuple(extracted),
     )
     output_path = destination / "financials.json"

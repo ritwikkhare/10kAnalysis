@@ -658,3 +658,52 @@ prior-year 10-Q. The resulting schema and evidence graph passed validation and
 generated idempotent import SQL. This test did not contact production D1 or retry the
 failed production job. No new migration, Queue, Turnstile setting, secret, deployment,
 or recurring schedule is part of this reconciliation.
+
+### Universal-onboarding hardening
+
+The broader local verification found several general pipeline defects rather than a
+ticker allowlist:
+
+- GitHub onboarding must explicitly check out `main`, and every manifest records the
+  exact source revision used by the job.
+- Bank revenue can use `RevenuesNetOfInterestExpense`; this is now a normal ordered
+  concept alias rather than a company-specific exception.
+- Some combined-registrant filings contain valid inline XBRL even though SEC Company
+  Facts has no rows for that accession. FilingLens now has a strict fallback that
+  accepts only US-GAAP USD facts for the requested CIK, exact report end date, and
+  consolidated non-dimensioned context. Every fallback fact links to its exact filing
+  element. Missing or conflicting facts remain unsupported.
+- Item 1A blocks were previously emitted in HTML closing order, and later cross-
+  references to Item 1A could be mistaken for headings. Blocks now retain document
+  order, headings are matched strictly, exact duplicates are removed, and passage
+  matching uses bounded candidates instead of an all-pairs comparison.
+- Ratios now require both inputs to share the same validated measurement period.
+- Temporary GitHub dispatch failures no longer consume a filing-processing attempt.
+  Terminal dispatch failures and retry exhaustion create durable diagnostic rows.
+- CLI failures retain their precise stage, such as `match_prior_filing` or
+  `compare_risks`, in the job manifest and D1 failure record.
+
+Local SEC runs completed for COST, JPM, BA, DUK, and CRM. These cover retail,
+banking, industrials, utilities, and software with different fiscal calendars and
+XBRL concepts. The final regression suite passes 49 Python tests, 22 Worker/API
+tests, and 18 website tests, plus TypeScript checks, generated-binding checks,
+website lint and production build, Worker dry-run packaging, and Worker startup
+profiling. The Worker configuration has no cron trigger.
+
+### Onboarding troubleshooting
+
+1. Open the analysis job status and note `failure_stage` and `error_code`; the public
+   message is intentionally safe and does not expose private diagnostics.
+2. Download the matching GitHub Actions `filinglens-onboarding-<run>` artifact. Its
+   manifest contains the source revision, per-form stage, exception type, and bounded
+   diagnostic detail.
+3. Confirm the run checked out current `main`. A stale revision can execute an older
+   processor even when the Worker is current.
+4. Treat `unsupported` as a classification, not a retryable crash. Foreign issuers,
+   funds, inactive issuers, and companies without enough comparable 10-K/10-Q history
+   cannot be made reliable by repeated retries.
+5. For missing facts, inspect the saved warnings and SEC evidence. FilingLens skips
+   dependent ratios and comparisons instead of synthesizing values.
+6. Before deployment, run the commands above and verify that `deploy:dry` shows the
+   production Turnstile hostname. It packages from `api/wrangler.jsonc`, not a stale
+   generated build-directory configuration.

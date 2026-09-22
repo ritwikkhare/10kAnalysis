@@ -79,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    stage = "configuration"
     try:
         if args.form != "10-K" and (args.compare_risks or args.build_report):
             raise SecError(
@@ -89,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         # from XBRL fiscal identity below, rather than assuming the second-most
         # recent filing represents the prior fiscal year.
         filing_count = 1
+        stage = "download_current_filing"
         downloads = client.download_recent_filings(
             args.ticker,
             args.output_dir,
@@ -111,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
             or args.compare_previous
             or args.build_report
         ):
+            stage = "extract_current_financials"
             financials, financials_path = extract_financials(
                 client.fetch_json,
                 metadata,
@@ -118,10 +121,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             pipeline_warnings.extend(financials.warnings)
             if args.calculate_ratios or args.compare_previous or args.build_report:
+                stage = "calculate_current_ratios"
                 ratios, ratios_path = calculate_ratios(financials, html_path.parent)
                 pipeline_warnings.extend(ratios.warnings)
             if args.compare_previous or args.build_report:
+                stage = "match_prior_filing"
                 quarter_match = find_prior_year_filing(client.fetch_json, financials)
+                stage = "download_prior_filing"
                 downloads.append(
                     client.download_filing_by_accession(
                         args.ticker,
@@ -130,17 +136,20 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 previous_metadata, previous_html_path = downloads[1]
+                stage = "extract_prior_financials"
                 previous_financials, _ = extract_financials(
                     client.fetch_json,
                     previous_metadata,
                     previous_html_path.parent,
                 )
+                stage = "calculate_prior_ratios"
                 previous_ratios, _ = calculate_ratios(
                     previous_financials,
                     previous_html_path.parent,
                 )
                 pipeline_warnings.extend(previous_financials.warnings)
                 pipeline_warnings.extend(previous_ratios.warnings)
+                stage = "compare_financial_periods"
                 comparison_result, comparison_path = compare_years(
                     financials,
                     previous_financials,
@@ -153,22 +162,28 @@ def main(argv: list[str] | None = None) -> int:
             if len(downloads) == 1:
                 # Risk-only runs still use the evidence-backed prior fiscal-year
                 # annual filing, and never a 10-K/A treated as a new year.
+                stage = "extract_current_financials"
                 current_financials, _ = extract_financials(
                     client.fetch_json, metadata, html_path.parent
                 )
+                stage = "match_prior_filing"
                 quarter_match = find_prior_year_filing(client.fetch_json, current_financials)
+                stage = "download_prior_filing"
                 downloads.append(client.download_filing_by_accession(
                     args.ticker, quarter_match.accession_number, args.output_dir
                 ))
             previous_metadata, previous_html_path = downloads[1]
+            stage = "extract_current_risks"
             current_risks, _ = extract_risk_section(
                 html_path, metadata, html_path.parent
             )
+            stage = "extract_prior_risks"
             previous_risks, _ = extract_risk_section(
                 previous_html_path,
                 previous_metadata,
                 previous_html_path.parent,
             )
+            stage = "compare_risks"
             risk_comparison_result, risk_changes_path = compare_risk_sections(
                 current_risks,
                 previous_risks,
@@ -177,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.build_report:
             if comparison_result is None or risk_comparison_result is None:
                 raise SecError("Report inputs were not generated.")
+            stage = "build_report"
             report_path = build_html_report(
                 metadata,
                 financials,
@@ -186,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
                 Path("outputs"),
             )
     except (ValueError, SecError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error [{stage}]: {exc}", file=sys.stderr)
         return 1
 
     print(f"Downloaded {metadata.company_name} {metadata.form}")

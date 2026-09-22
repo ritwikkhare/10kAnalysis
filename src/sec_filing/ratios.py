@@ -94,6 +94,18 @@ def _ratio_input(fact: FinancialFact) -> RatioInput:
     )
 
 
+def _same_measurement_period(left: FinancialFact, right: FinancialFact) -> bool:
+    if left.period_type != right.period_type or left.period_end != right.period_end:
+        return False
+    if left.period_type == "instant":
+        return True
+    return (
+        left.period_start == right.period_start
+        and left.fiscal_year == right.fiscal_year
+        and left.fiscal_period == right.fiscal_period
+    )
+
+
 def calculate_ratios(
     financials: FinancialExtraction,
     destination: Path,
@@ -118,6 +130,12 @@ def calculate_ratios(
             continue
         numerator = facts_by_key[spec.numerator_key]
         denominator = facts_by_key[spec.denominator_key]
+        if not _same_measurement_period(numerator, denominator):
+            warnings.append(
+                f"Skipped {spec.name}: input facts do not share the same "
+                "validated measurement period."
+            )
+            continue
         if denominator.value == 0:
             warnings.append(f"Skipped {spec.name}: denominator is zero.")
             continue

@@ -28,6 +28,9 @@ jobs:
     steps:
       - name: Check out validated source
         uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -69,6 +72,7 @@ jobs:
             --output-dir work/onboarding/processed \
             --sql-output work/onboarding/import.sql \
             --manifest work/onboarding/manifest.json \
+            --source-revision "$GITHUB_SHA" \
             --user-agent "$SEC_USER_AGENT"
 
       - name: Apply the job schema and validation-gated idempotent import

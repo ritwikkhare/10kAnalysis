@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import copy
 from pathlib import Path
@@ -622,6 +623,30 @@ class SecClientTests(unittest.TestCase):
             validate_document(saved, expected_record_type="financial_ratios")
             self.assertEqual(len(saved["ratios"]), 3)
             self.assertEqual(saved["ratios"][0]["formula"], "net_income / revenue")
+
+    def test_skips_ratio_when_inputs_do_not_share_a_measurement_period(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            metadata, html_path = self.client.download_latest_10k(
+                "AAPL", Path(temporary)
+            )
+            financials, _ = extract_financials(
+                self.client.fetch_json,
+                metadata,
+                html_path.parent,
+            )
+            mismatched = tuple(
+                replace(fact, period_start="2025-01-01")
+                if fact.key == "net_income" else fact
+                for fact in financials.facts
+            )
+            result, _ = calculate_ratios(
+                replace(financials, facts=mismatched), html_path.parent
+            )
+
+            self.assertNotIn("net_margin", {ratio.key for ratio in result.ratios})
+            self.assertTrue(
+                any("validated measurement period" in item for item in result.warnings)
+            )
 
     def test_compares_two_10ks_and_links_every_change_to_both_filings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

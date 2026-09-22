@@ -289,6 +289,105 @@ describe("SEC intelligence API", () => {
     expect(sent).toHaveLength(2);
   });
 
+  it("does not consume a processing attempt when GitHub dispatch is temporarily unavailable", async () => {
+    await env.DB.prepare("DELETE FROM analysis_jobs WHERE ticker = 'FRESH'").run();
+    const sent: AnalysisQueueMessage[] = [];
+    const onboardingEnv: OnboardingEnv = {
+      DB: env.DB,
+      ANALYSIS_QUEUE: fakeQueue(sent),
+      TICKER_SEARCH_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      ONBOARDING_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      ONBOARDING_ENABLED: "true",
+      GITHUB_REPOSITORY: "ritwikkhare/10kAnalysis",
+      TURNSTILE_ACTION: "analyze_ticker",
+      TURNSTILE_HOSTNAMES: "filinglens-apple-sec.ritwikkhare10k.workers.dev",
+    };
+    const challenge = async () => ({ ok: true } as const);
+    const request = new Request("https://api.example.test", {
+      method: "POST",
+      body: JSON.stringify({ turnstile_token: "fresh-token" }),
+    });
+    const created = await createAnalysisJob(request, "FRESH", onboardingEnv, challenge);
+    const job: any = (await created.json() as any).data;
+    let retried = false;
+    const firstDelivery = {
+      id: "queue-transient-1", timestamp: new Date(), body: sent[0], attempts: 1,
+      ack: () => { throw new Error("transient delivery must not be acknowledged"); },
+      retry: () => { retried = true; },
+    } as Message<AnalysisQueueMessage>;
+    await consumeAnalysisQueue(
+      { queue: "filinglens-analysis", messages: [firstDelivery], metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } }, ackAll: () => {}, retryAll: () => {} },
+      onboardingEnv,
+      async () => new Response(null, { status: 503 }),
+    );
+    expect(retried).toBe(true);
+    let status: any = (await (await analysisJobStatus(job.job_id, onboardingEnv)).json() as any).data;
+    expect(status).toMatchObject({ status: "queued", attempt_count: 0 });
+
+    let acknowledged = false;
+    const secondDelivery = {
+      ...firstDelivery, id: "queue-transient-2", attempts: 2,
+      ack: () => { acknowledged = true; },
+      retry: () => { throw new Error("successful dispatch must not retry"); },
+    } as Message<AnalysisQueueMessage>;
+    await consumeAnalysisQueue(
+      { queue: "filinglens-analysis", messages: [secondDelivery], metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } }, ackAll: () => {}, retryAll: () => {} },
+      onboardingEnv,
+      async () => new Response(null, { status: 204 }),
+    );
+    expect(acknowledged).toBe(true);
+    status = (await (await analysisJobStatus(job.job_id, onboardingEnv)).json() as any).data;
+    expect(status).toMatchObject({ status: "processing", attempt_count: 1 });
+  });
+
+  it("safely resumes authorization interrupted before GitHub accepted it", async () => {
+    await env.DB.prepare("DELETE FROM analysis_jobs WHERE ticker = 'FRESH'").run();
+    const sent: AnalysisQueueMessage[] = [];
+    const onboardingEnv: OnboardingEnv = {
+      DB: env.DB,
+      ANALYSIS_QUEUE: fakeQueue(sent),
+      TICKER_SEARCH_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      ONBOARDING_RATE_LIMITER: { limit: async () => ({ success: true }) },
+      ONBOARDING_ENABLED: "true",
+      GITHUB_REPOSITORY: "ritwikkhare/10kAnalysis",
+      TURNSTILE_ACTION: "analyze_ticker",
+      TURNSTILE_HOSTNAMES: "filinglens-apple-sec.ritwikkhare10k.workers.dev",
+    };
+    const created = await createAnalysisJob(
+      new Request("https://api.example.test", {
+        method: "POST",
+        body: JSON.stringify({ turnstile_token: "resume-token" }),
+      }),
+      "FRESH",
+      onboardingEnv,
+      async () => ({ ok: true } as const),
+    );
+    const job: any = (await created.json() as any).data;
+    await env.DB.prepare(
+      "UPDATE analysis_jobs SET status = 'processing', attempt_count = 0 WHERE job_id = ?",
+    ).bind(job.job_id).run();
+
+    let acknowledged = false;
+    await consumeAnalysisQueue(
+      {
+        queue: "filinglens-analysis",
+        messages: [{
+          id: "queue-resume", timestamp: new Date(), body: sent[0], attempts: 2,
+          ack: () => { acknowledged = true; },
+          retry: () => { throw new Error("resumed authorization must not retry"); },
+        } as Message<AnalysisQueueMessage>],
+        metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+        ackAll: () => {}, retryAll: () => {},
+      },
+      onboardingEnv,
+      async () => new Response(null, { status: 204 }),
+    );
+
+    expect(acknowledged).toBe(true);
+    const status: any = (await (await analysisJobStatus(job.job_id, onboardingEnv)).json() as any).data;
+    expect(status).toMatchObject({ status: "processing", attempt_count: 1 });
+  });
+
   it("returns safe unsupported, already-analyzed, disabled, and rate-limit states", async () => {
     const sent: AnalysisQueueMessage[] = [];
     const base = {

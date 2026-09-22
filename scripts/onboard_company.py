@@ -158,6 +158,10 @@ def build_onboarding_import(
             f"{item.form}/{item.stage}/{item.error_code or 'UNKNOWN'}: {item.message}"
             for item in failures
         )
+        failure_stages = sorted({item.stage for item in failures})
+        exact_failure_stage = (
+            failure_stages[0] if len(failure_stages) == 1 else "multiple_pipeline_stages"
+        )
         manifest = {
             "job_id": job_id,
             "ticker": ticker,
@@ -171,7 +175,7 @@ def build_onboarding_import(
             status=status,
             message=public_message,
             error_code=code,
-            failure_stage="processing",
+            failure_stage=exact_failure_stage,
             diagnostic=diagnostic,
             timestamp=run.completed_at,
         ), False
@@ -226,6 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sql-output", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--source-revision")
     parser.add_argument("--user-agent", required=True)
     return parser
 
@@ -292,6 +297,8 @@ def main(argv: list[str] | None = None) -> int:
             diagnostic=f"{type(exc).__name__}: {exc}",
         )
         success = False
+    if args.source_revision:
+        manifest["source_revision"] = args.source_revision
     args.sql_output.parent.mkdir(parents=True, exist_ok=True)
     args.sql_output.write_text(sql, encoding="utf-8")
     args.manifest.parent.mkdir(parents=True, exist_ok=True)

@@ -226,35 +226,85 @@ export async function consumeAnalysisQueue(
     const timestamp = new Date().toISOString();
     try {
       const job = await first(env.DB, `${JOB_SELECT} WHERE job_id = ?`, [message.body.job_id]);
-      if (!job || job.ticker !== message.body.ticker || job.cik !== message.body.cik || job.status !== "queued") {
+      const resumingInterruptedAuthorization =
+        job?.status === "processing" && Number(job.attempt_count) === 0;
+      if (!job || job.ticker !== message.body.ticker || job.cik !== message.body.cik ||
+          (job.status !== "queued" && !resumingInterruptedAuthorization)) {
         message.ack();
         continue;
       }
-      await env.DB.prepare(
-        `UPDATE analysis_jobs SET status = 'processing', attempt_count = attempt_count + 1,
-          started_at = COALESCE(started_at, ?), updated_at = ?,
-          public_message = 'Background processing has started.' WHERE job_id = ? AND status = 'queued'`,
-      ).bind(timestamp, timestamp, message.body.job_id).run();
+      if (Number(job.attempt_count) >= Number(job.max_attempts)) {
+        await env.DB.batch([
+          env.DB.prepare(
+            `INSERT INTO analysis_job_failures
+              (job_id, stage, error_code, diagnostic_message, occurred_at)
+              VALUES (?, 'dispatch', 'RETRY_LIMIT_REACHED', 'Queue message arrived after the processing retry limit.', ?)`,
+          ).bind(message.body.job_id, timestamp),
+          env.DB.prepare(
+            `UPDATE analysis_jobs SET status = 'failed', completed_at = ?, updated_at = ?,
+              public_message = 'This analysis request has reached its retry limit.',
+              error_code = 'RETRY_LIMIT_REACHED', failure_stage = 'dispatch'
+              WHERE job_id = ? AND status = 'queued'`,
+          ).bind(timestamp, timestamp, message.body.job_id),
+        ]);
+        message.ack();
+        continue;
+      }
+      if (job.status === "queued") {
+        await env.DB.prepare(
+          `UPDATE analysis_jobs SET status = 'processing', updated_at = ?,
+            public_message = 'Authorizing background processing.'
+            WHERE job_id = ? AND status = 'queued'`,
+        ).bind(timestamp, message.body.job_id).run();
+      }
       const response = await dispatcher(message.body, env);
       if (response.status === 204) {
+        const acceptedAt = new Date().toISOString();
+        await env.DB.prepare(
+          `UPDATE analysis_jobs SET attempt_count = attempt_count + 1,
+            started_at = COALESCE(started_at, ?), updated_at = ?,
+            public_message = 'Background processing has started.'
+            WHERE job_id = ? AND status = 'processing'`,
+        ).bind(acceptedAt, acceptedAt, message.body.job_id).run();
+        console.log(JSON.stringify({
+          message: "analysis_dispatch_accepted",
+          job_id: message.body.job_id,
+          ticker: message.body.ticker,
+          queue_attempt: message.attempts,
+        }));
         message.ack();
         continue;
       }
       if (response.status === 429 || response.status >= 500) throw new Error(`dispatch_${response.status}`);
-      await env.DB.prepare(
-        `UPDATE analysis_jobs SET status = 'failed', completed_at = ?, updated_at = ?,
-          public_message = 'Background processing could not be authorized. The request can be retried after configuration is fixed.',
-          error_code = 'DISPATCH_REJECTED', failure_stage = 'dispatch' WHERE job_id = ?`,
-      ).bind(timestamp, timestamp, message.body.job_id).run();
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO analysis_job_failures
+            (job_id, stage, error_code, diagnostic_message, occurred_at)
+            VALUES (?, 'dispatch', 'DISPATCH_REJECTED', ?, ?)`,
+        ).bind(message.body.job_id, `GitHub repository dispatch returned HTTP ${response.status}.`, timestamp),
+        env.DB.prepare(
+          `UPDATE analysis_jobs SET status = 'failed', completed_at = ?, updated_at = ?,
+            public_message = 'Background processing could not be authorized. The request can be retried after configuration is fixed.',
+            error_code = 'DISPATCH_REJECTED', failure_stage = 'dispatch' WHERE job_id = ?`,
+        ).bind(timestamp, timestamp, message.body.job_id),
+      ]);
       message.ack();
     } catch (error) {
       if (message.attempts >= 3) {
         try {
-          await env.DB.prepare(
-            `UPDATE analysis_jobs SET status = 'failed', completed_at = ?, updated_at = ?,
-              public_message = 'Background processing was temporarily unavailable and exhausted automatic retries.',
-              error_code = 'DISPATCH_UNAVAILABLE', failure_stage = 'dispatch' WHERE job_id = ?`,
-          ).bind(timestamp, timestamp, message.body.job_id).run();
+          const diagnostic = error instanceof Error ? error.message : "unknown dispatch error";
+          await env.DB.batch([
+            env.DB.prepare(
+              `INSERT INTO analysis_job_failures
+                (job_id, stage, error_code, diagnostic_message, occurred_at)
+                VALUES (?, 'dispatch', 'DISPATCH_UNAVAILABLE', ?, ?)`,
+            ).bind(message.body.job_id, diagnostic.slice(0, 2000), timestamp),
+            env.DB.prepare(
+              `UPDATE analysis_jobs SET status = 'failed', completed_at = ?, updated_at = ?,
+                public_message = 'Background processing was temporarily unavailable and exhausted automatic retries.',
+                error_code = 'DISPATCH_UNAVAILABLE', failure_stage = 'dispatch' WHERE job_id = ?`,
+            ).bind(timestamp, timestamp, message.body.job_id),
+          ]);
         } catch (statusError) {
           console.error(JSON.stringify({ message: "analysis_failure_status_write_failed", job_id: message.body.job_id, error: statusError instanceof Error ? statusError.message : "unknown" }));
           message.retry({ delaySeconds: 300 });

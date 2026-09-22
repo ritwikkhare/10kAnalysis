@@ -16,7 +16,7 @@ from sec_filing.risks import compare_risk_sections, extract_risk_section
 
 COMPANIES = (
     ("COST", 909832, "Costco Wholesale", "RevenueFromContractWithCustomerExcludingAssessedTax", "FY"),
-    ("JPM", 19617, "JPMorgan Chase", "Revenues", "FY"),
+    ("JPM", 19617, "JPMorgan Chase", "RevenuesNetOfInterestExpense", "FY"),
     ("BA", 12927, "Boeing", "SalesRevenueNet", "FY"),
     ("DUK", 1326160, "Duke Energy", "RegulatedAndUnregulatedOperatingRevenue", "FY"),
     ("CRM", 1108524, "Salesforce", "SalesRevenueServicesNet", "FY"),

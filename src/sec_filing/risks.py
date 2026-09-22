@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -19,10 +20,16 @@ from .schema import (
 
 
 ITEM_1A = re.compile(r"\bItem\s+1A[.\s:–—-]+Risk\s+Factors\b", re.IGNORECASE)
+ITEM_1A_HEADING = re.compile(
+    r"^(?:Part\s+I[.\s:–—-]+)?Item\s+1A[.\s:–—-]+Risk\s+Factors[.\s]*$",
+    re.IGNORECASE,
+)
 ITEM_1B = re.compile(r"\bItem\s+1B[.\s:–—-]+", re.IGNORECASE)
 ITEM_2 = re.compile(r"\bItem\s+2[.\s:–—-]+Properties\b", re.IGNORECASE)
 FOOTER = re.compile(r"^.+\|.*Form 10-K\s*\|\s*\d+$", re.IGNORECASE)
 BLOCK_TAGS = {"div", "p", "li", "td"}
+MAX_APPROXIMATE_CANDIDATES = 12
+POSITIONAL_NEIGHBORS = 2
 
 
 def _clean_text(value: str) -> str:
@@ -33,10 +40,96 @@ def _comparison_text(value: str) -> str:
     return re.sub(r"[^a-z0-9 ]", "", _clean_text(value).lower())
 
 
+def _comparison_tokens(value: str) -> frozenset[str]:
+    """Return useful tokens for bounded candidate generation."""
+
+    return frozenset(re.findall(r"[a-z0-9]{4,}", value))
+
+
+def _risk_candidate_pairs(
+    current_text: list[str],
+    previous_text: list[str],
+    *,
+    match_threshold: float,
+) -> list[tuple[float, int, int]]:
+    """Generate plausible passage matches without an all-pairs comparison.
+
+    Large filings can expose thousands of HTML blocks. Comparing every current
+    block with every prior block makes processing quadratic and caused real
+    onboarding jobs to run for minutes. Exact text is paired first. Remaining
+    passages are compared only with a small set selected by uncommon shared
+    tokens and nearby document position.
+    """
+
+    if not current_text or not previous_text:
+        return []
+
+    pairs: list[tuple[float, int, int]] = []
+    exact_previous: dict[str, deque[int]] = defaultdict(deque)
+    for previous_index, value in enumerate(previous_text):
+        exact_previous[value].append(previous_index)
+    exact_current: set[int] = set()
+    exact_matched_previous: set[int] = set()
+    for current_index, value in enumerate(current_text):
+        matches = exact_previous.get(value)
+        if matches:
+            previous_index = matches.popleft()
+            exact_current.add(current_index)
+            exact_matched_previous.add(previous_index)
+            pairs.append((1.0, current_index, previous_index))
+
+    previous_tokens = [_comparison_tokens(value) for value in previous_text]
+    token_frequency = Counter(
+        token for tokens in previous_tokens for token in tokens
+    )
+    # Very common boilerplate words do not identify a plausible paragraph.
+    common_limit = max(10, len(previous_text) // 5)
+    token_index: dict[str, list[int]] = defaultdict(list)
+    for previous_index, tokens in enumerate(previous_tokens):
+        if previous_index in exact_matched_previous:
+            continue
+        for token in tokens:
+            if token_frequency[token] <= common_limit:
+                token_index[token].append(previous_index)
+
+    for current_index, value in enumerate(current_text):
+        if current_index in exact_current:
+            continue
+        hits: Counter[int] = Counter()
+        for token in _comparison_tokens(value):
+            for previous_index in token_index.get(token, ()):
+                hits[previous_index] += 1
+
+        expected = round(
+            current_index * (len(previous_text) - 1) / max(len(current_text) - 1, 1)
+        )
+        positional = {
+            index
+            for index in range(
+                max(0, expected - POSITIONAL_NEIGHBORS),
+                min(len(previous_text), expected + POSITIONAL_NEIGHBORS + 1),
+            )
+            if index not in exact_matched_previous
+        }
+        ranked = sorted(
+            hits,
+            key=lambda index: (-hits[index], abs(index - expected), index),
+        )[:MAX_APPROXIMATE_CANDIDATES]
+        candidates = set(ranked) | positional
+        for previous_index in candidates:
+            similarity = SequenceMatcher(
+                None, value, previous_text[previous_index]
+            ).ratio()
+            if similarity >= match_threshold:
+                pairs.append((similarity, current_index, previous_index))
+    return pairs
+
+
 @dataclass
 class _Block:
     text: str
     element_id: str | None
+    order: int
 
 
 @dataclass
@@ -44,6 +137,7 @@ class _Frame:
     tag: str
     element_id: str | None
     parts: list[str]
+    order: int
 
 
 class _BlockParser(HTMLParser):
@@ -51,12 +145,16 @@ class _BlockParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.frames: list[_Frame] = []
         self.blocks: list[_Block] = []
+        self.next_order = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         lowered = tag.lower()
         if lowered in BLOCK_TAGS:
             attributes = dict(attrs)
-            self.frames.append(_Frame(lowered, attributes.get("id"), []))
+            self.frames.append(
+                _Frame(lowered, attributes.get("id"), [], self.next_order)
+            )
+            self.next_order += 1
         elif lowered == "br" and self.frames:
             self.frames[-1].parts.append(" ")
 
@@ -81,7 +179,7 @@ class _BlockParser(HTMLParser):
         frame = self.frames.pop(matching_index)
         text = _clean_text("".join(frame.parts))
         if text or frame.element_id:
-            self.blocks.append(_Block(text, frame.element_id))
+            self.blocks.append(_Block(text, frame.element_id, frame.order))
 
 
 @dataclass(frozen=True)
@@ -144,6 +242,10 @@ def extract_risk_section(
 ) -> tuple[RiskSection, Path]:
     parser = _BlockParser()
     parser.feed(html_path.read_text(encoding="utf-8", errors="replace"))
+    # HTML elements close from the inside out.  Without restoring their opening
+    # order, a large outer <div> is emitted after all of its descendants and can
+    # move headings and boundary markers out of document order.
+    parser.blocks.sort(key=lambda block: block.order)
 
     # Filings often repeat Item 1A in the table of contents.  Build every
     # candidate section and select the substantial one instead of assuming the
@@ -155,7 +257,7 @@ def extract_risk_section(
         if block.element_id:
             current_anchor = block.element_id
         normalized = _clean_text(block.text)
-        if ITEM_1A.search(normalized) and len(normalized) <= 120:
+        if ITEM_1A_HEADING.fullmatch(normalized):
             raw_passages = []
             candidates.append(raw_passages)
             continue
@@ -176,6 +278,20 @@ def extract_risk_section(
     raw_passages = max(candidates, key=lambda items: sum(len(text) for text, _ in items))
     if not raw_passages:
         raise SecError(f"Item 1A contained no extractable passages in {html_path}.")
+
+    # Inline XBRL filings frequently repeat the same text through nested table,
+    # div, and paragraph nodes. Preserve the first source anchor and remove only
+    # exact normalized duplicates so they do not inflate the dashboard or the
+    # comparison workload.
+    deduplicated: list[tuple[str, str | None]] = []
+    seen_passages: set[str] = set()
+    for text, anchor in raw_passages:
+        identity = _comparison_text(text)
+        if not identity or identity in seen_passages:
+            continue
+        seen_passages.add(identity)
+        deduplicated.append((text, anchor))
+    raw_passages = deduplicated
 
     passages = tuple(
         RiskPassage(
@@ -257,12 +373,11 @@ def compare_risk_sections(
     current_text = [_comparison_text(item.text) for item in current.passages]
     previous_text = [_comparison_text(item.text) for item in previous.passages]
 
-    candidate_pairs: list[tuple[float, int, int]] = []
-    for current_index, current_value in enumerate(current_text):
-        for previous_index, previous_value in enumerate(previous_text):
-            similarity = SequenceMatcher(None, current_value, previous_value).ratio()
-            if similarity >= match_threshold:
-                candidate_pairs.append((similarity, current_index, previous_index))
+    candidate_pairs = _risk_candidate_pairs(
+        current_text,
+        previous_text,
+        match_threshold=match_threshold,
+    )
     candidate_pairs.sort(reverse=True)
 
     matched_current: set[int] = set()
@@ -336,7 +451,9 @@ def compare_risk_sections(
         previous_filing_url=previous.filing_url,
         compared_at=datetime.now(UTC).isoformat(),
         methodology=(
-            "Paragraphs are normalized and greedily paired by SequenceMatcher similarity. "
+            "Paragraphs are normalized, exact matches are paired first, and remaining "
+            "candidates are bounded by uncommon shared tokens and nearby document position "
+            "before greedy SequenceMatcher pairing. "
             f"Pairs below {material_change_threshold:.2f} but at or above "
             f"{match_threshold:.2f} are materially changed; unmatched passages are added "
             "or removed. This is deterministic text analysis, not an AI conclusion."

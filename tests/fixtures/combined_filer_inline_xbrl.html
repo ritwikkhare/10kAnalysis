@@ -1,0 +1,16 @@
+<!doctype html>
+<html><body>
+<ix:header><ix:hidden>
+  <ix:nonNumeric contextRef="c-current" name="dei:DocumentFiscalYearFocus">2026</ix:nonNumeric>
+  <ix:nonNumeric contextRef="c-current" name="dei:DocumentFiscalPeriodFocus">Q2</ix:nonNumeric>
+</ix:hidden><ix:resources>
+  <xbrli:context id="c-current"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0001326160</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
+  <xbrli:context id="c-segment"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0001326160</xbrli:identifier><xbrli:segment><xbrldi:explicitMember dimension="dei:LegalEntityAxis">example:SubsidiaryMember</xbrldi:explicitMember></xbrli:segment></xbrli:entity><xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-06-30</xbrli:endDate></xbrli:period></xbrli:context>
+</ix:resources></ix:header>
+<ix:nonFraction id="fact-revenue" contextRef="c-current" unitRef="USD" scale="3" name="us-gaap:RegulatedAndUnregulatedOperatingRevenue">15,500,000</ix:nonFraction>
+<ix:nonFraction id="fact-income" contextRef="c-current" unitRef="USD" scale="3" name="us-gaap:NetIncomeLoss">2,100,000</ix:nonFraction>
+<ix:nonFraction id="fact-assets" contextRef="c-current" unitRef="USD" scale="3" name="us-gaap:Assets">190,000,000</ix:nonFraction>
+<ix:nonFraction id="fact-liabilities" contextRef="c-current" unitRef="USD" scale="3" name="us-gaap:Liabilities">120,000,000</ix:nonFraction>
+<ix:nonFraction id="fact-cash" contextRef="c-current" unitRef="USD" scale="3" name="us-gaap:NetCashProvidedByUsedInOperatingActivities">4,000,000</ix:nonFraction>
+<ix:nonFraction id="segment-revenue" contextRef="c-segment" unitRef="USD" scale="3" name="us-gaap:RegulatedAndUnregulatedOperatingRevenue">99,999,999</ix:nonFraction>
+</body></html>

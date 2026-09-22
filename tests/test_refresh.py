@@ -42,20 +42,24 @@ class FakeDiscoveryClient:
 class RefreshTests(unittest.TestCase):
     def test_default_runner_preserves_the_exact_cli_failure(self) -> None:
         def failed_cli(_arguments: list[str]) -> int:
-            print("Error: no prior-year Q2 filing matched", file=sys.stderr)
+            print(
+                "Error [match_prior_filing]: no prior-year Q2 filing matched",
+                file=sys.stderr,
+            )
             return 1
 
         with patch("sec_filing.cli.main", side_effect=failed_cli):
             with self.assertRaisesRegex(
                 PipelineExecutionError,
                 "no prior-year Q2 filing matched",
-            ):
+            ) as raised:
                 default_pipeline_runner(
                     "COST",
                     "10-Q",
                     Path("unused"),
                     "FilingLens test@example.com",
                 )
+        self.assertEqual(raised.exception.stage, "match_prior_filing")
 
     @staticmethod
     def _write_metadata(output: Path, *, accession: str, form: str) -> None:

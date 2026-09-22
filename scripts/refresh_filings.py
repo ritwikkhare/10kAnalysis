@@ -11,6 +11,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any, Protocol
 from uuid import uuid4
@@ -34,6 +35,10 @@ PipelineRunner = Callable[[str, str, Path, str], int]
 
 class PipelineExecutionError(RuntimeError):
     """A filing pipeline failure with its bounded, user-safe CLI diagnostic."""
+
+    def __init__(self, stage: str, diagnostic: str) -> None:
+        super().__init__(diagnostic)
+        self.stage = stage
 
 
 def _bounded_diagnostic(value: str, *, limit: int = 2000) -> str:
@@ -128,8 +133,11 @@ def default_pipeline_runner(
         exit_code = cli_main(arguments)
     diagnostic = stderr.getvalue()
     if exit_code != 0:
+        bounded = _bounded_diagnostic(diagnostic)
+        match = re.search(r"Error \[([a-z0-9_]+)\]:", bounded)
         raise PipelineExecutionError(
-            f"Pipeline exited with status {exit_code}: {_bounded_diagnostic(diagnostic)}"
+            match.group(1) if match else "pipeline",
+            f"Pipeline exited with status {exit_code}: {bounded}",
         )
     if diagnostic:
         print(diagnostic, file=sys.stderr, end="")
@@ -223,7 +231,7 @@ def execute_refresh(
                         status="failed",
                         accession_number=accession,
                         filing_date=filing_date,
-                        stage="processing",
+                        stage=getattr(exc, "stage", "processing"),
                         error_code=type(exc).__name__.upper(),
                         message=str(exc),
                     )
