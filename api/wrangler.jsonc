@@ -18,7 +18,7 @@
   "vars": {
     "GITHUB_REPOSITORY": "ritwikkhare/10kAnalysis",
     "TURNSTILE_ACTION": "analyze_ticker",
-    "TURNSTILE_HOSTNAMES": "filinglens-apple-sec.ritwikkhare10k.workers.dev",
+    "TURNSTILE_HOSTNAMES": "filinglens.ritwikkhare.workers.dev",
     "AI_ENABLED": "true",
     "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   },

@@ -1,6 +1,25 @@
-# SEC Filing Intelligence Platform
+# FilingLens — SEC Filing Intelligence Platform
 
-This project downloads a company's latest annual or quarterly filing (Form 10-K or
+**Live demo:** <https://filinglens.ritwikkhare.workers.dev>
+
+## About this project
+
+FilingLens is an evidence-grounded research platform for SEC 10-K and 10-Q filings.
+A Python ingestion pipeline resolves tickers, downloads official EDGAR filings,
+normalizes XBRL facts, matches fiscal periods, calculates ratios, and compares Item 1A
+risk language. Cloudflare Workers, Queues, and D1 provide asynchronous company
+onboarding, storage, and a read-only API; the responsive web application presents the
+results.
+
+The core design rule is traceability. Every reported fact retains its SEC URL; every
+ratio and comparison identifies its input evidence; and AI claims are published only
+after schema, citation, and numeric validation. Derived numbers are reproduced by the
+backend from SEC-backed inputs, and unsupported output fails closed rather than being
+shown as a conclusion.
+
+![FilingLens dashboard](docs/screenshots/filinglens-desktop.png)
+
+The project downloads a company's latest annual or quarterly filing (Form 10-K or
 10-Q) directly from the official SEC EDGAR service. It saves both the original HTML
 filing and metadata containing the filing date, accession number, and source URL.
 
@@ -299,17 +318,16 @@ from the public SEC data.
 
 Stage 3, Step 4 was deployed after explicit approval. The public API is available at:
 
-<https://filinglens-sec-api.ritwikkhare10k.workers.dev/api/v1/health>
+<https://filinglens-sec-api.ritwikkhare.workers.dev/api/v1/health>
 
 Cloudflare D1 database `filinglens-sec-data` contains the processed AAPL, MSFT, NVDA,
 and TSLA pilot. The separate `filinglens-sec-api` Worker reads from that database. All
 nine public endpoint categories were verified after deployment against the live data.
 
-The API and D1 deployment did not delete or replace the separate
-`filinglens-apple-sec` dashboard Worker. Stage 3, Step 5 subsequently upgraded that
-Worker in place, so the same public URL now serves the multi-company website:
+The API and D1 deployment did not delete or replace the original dashboard Worker.
+The completed multi-company website is now served by the `filinglens` Worker:
 
-<https://filinglens-apple-sec.ritwikkhare10k.workers.dev/>
+<https://filinglens.ritwikkhare.workers.dev/>
 
 ## Stage 3, Step 5: multi-company website
 
@@ -353,10 +371,11 @@ pnpm dev
 ```
 
 The override must implement schema version `1.0.0` and the Step 4 endpoint contract.
-Stage 3, Step 5 was deployed to the existing `filinglens-apple-sec` Worker on
-August 31, 2026 after explicit approval. The public website is available at:
+Stage 3, Step 5 was originally deployed to the `filinglens-apple-sec` Worker on
+August 31, 2026. The completed platform is now deployed under the shorter
+`filinglens` Worker name. The public website is available at:
 
-<https://filinglens-apple-sec.ritwikkhare10k.workers.dev/>
+<https://filinglens.ritwikkhare.workers.dev/>
 
 ## Stage 3, Step 6: automated filing refresh
 
@@ -850,9 +869,23 @@ The Q&A answer reported `$364.36 billion` of current-period revenue and cited th
 corresponding SEC XBRL evidence. Production retained 14 companies, 53 filings, and
 7,075 evidence links; the verification added only its approved AI responses, claims,
 claim-evidence relationships, and numeric audits. No recurring schedule was enabled,
-no other company was analyzed, and no Worker domain was renamed.
+no other company was analyzed. The final launch renamed the public website Worker to
+`filinglens` and the account workers.dev subdomain to `ritwikkhare`.
 
 The final local regression matrix passes 49 Python tests, 72 API/Worker tests, and 21
 website tests, plus TypeScript checks, generated Worker binding checks, website lint,
 production website build, secret review, and Worker dry-run packaging. All AI tests
 use mocked providers and isolated local D1 data.
+
+## Portfolio materials
+
+- [Resume-ready project bullets](docs/RESUME.md)
+- [Desktop and mobile screenshots](docs/screenshots/README.md)
+- Public website: <https://filinglens.ritwikkhare.workers.dev>
+
+## Future options
+
+The production platform is complete without these additions. Possible later work
+includes uptime and error-rate monitoring, a larger human-reviewed AI evaluation set,
+and a custom domain. These are intentionally not enabled in the current deployment;
+recurring filing schedules also remain disabled.

@@ -1,5 +1,5 @@
 export const DEFAULT_API_BASE =
-  'https://filinglens-sec-api.ritwikkhare10k.workers.dev/api/v1';
+  'https://filinglens-sec-api.ritwikkhare.workers.dev/api/v1';
 
 export type ApiEnvelope<T> = { schema_version: '1.0.0'; data: T; meta: Record<string, unknown> };
 export type Company = {

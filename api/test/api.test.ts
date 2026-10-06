@@ -285,7 +285,7 @@ describe("SEC intelligence API", () => {
       ONBOARDING_ENABLED: "true",
       GITHUB_REPOSITORY: "ritwikkhare/10kAnalysis",
       TURNSTILE_ACTION: "analyze_ticker",
-      TURNSTILE_HOSTNAMES: "filinglens-apple-sec.ritwikkhare10k.workers.dev",
+      TURNSTILE_HOSTNAMES: "filinglens.ritwikkhare.workers.dev",
     };
     const challenge = async () => ({ ok: true } as const);
     const request = () => new Request("https://api.example.test/api/v1/companies/FRESH/analysis", {
@@ -895,7 +895,7 @@ describe("SEC intelligence API", () => {
       ONBOARDING_ENABLED: "true",
       GITHUB_REPOSITORY: "ritwikkhare/10kAnalysis",
       TURNSTILE_ACTION: "analyze_ticker",
-      TURNSTILE_HOSTNAMES: "filinglens-apple-sec.ritwikkhare10k.workers.dev",
+      TURNSTILE_HOSTNAMES: "filinglens.ritwikkhare.workers.dev",
     };
     const challenge = async () => ({ ok: true } as const);
     const request = new Request("https://api.example.test", {
@@ -946,7 +946,7 @@ describe("SEC intelligence API", () => {
       ONBOARDING_ENABLED: "true",
       GITHUB_REPOSITORY: "ritwikkhare/10kAnalysis",
       TURNSTILE_ACTION: "analyze_ticker",
-      TURNSTILE_HOSTNAMES: "filinglens-apple-sec.ritwikkhare10k.workers.dev",
+      TURNSTILE_HOSTNAMES: "filinglens.ritwikkhare.workers.dev",
     };
     const created = await createAnalysisJob(
       new Request("https://api.example.test", {
@@ -993,7 +993,7 @@ describe("SEC intelligence API", () => {
       ONBOARDING_ENABLED: "true",
       GITHUB_REPOSITORY: "ritwikkhare/10kAnalysis",
       TURNSTILE_ACTION: "analyze_ticker",
-      TURNSTILE_HOSTNAMES: "filinglens-apple-sec.ritwikkhare10k.workers.dev",
+      TURNSTILE_HOSTNAMES: "filinglens.ritwikkhare.workers.dev",
     } satisfies OnboardingEnv;
     const challenge = async () => ({ ok: true } as const);
     const makeRequest = () => new Request("https://api.example.test", { method: "POST", body: JSON.stringify({ turnstile_token: "token" }) });
