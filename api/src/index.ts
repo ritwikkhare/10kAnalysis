@@ -2,6 +2,13 @@ import { all, evidenceFor, first, parseJsonColumn, type Row } from "./db.js";
 import { apiError, cleanAccession, cleanSearchQuery, cleanTicker, json, pagination } from "./http.js";
 import { enforceTickerSearchLimit } from "./rate_limit.js";
 import {
+  askCompanyAiQuestion,
+  generateCompanyAiAnalysis,
+  getCompanyAiAnalysis,
+  workersAiRunner,
+  type AiEnv,
+} from "./ai.js";
+import {
   analysisJobStatus,
   consumeAnalysisQueue,
   createAnalysisJob,
@@ -282,6 +289,12 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && parts.length === 5 && parts[2] === "companies" && parts[4] === "analysis") {
     return createAnalysisJob(request, parts[3], env);
   }
+  if (request.method === "POST" && parts.length === 5 && parts[2] === "companies" && parts[4] === "ai-analysis") {
+    return generateCompanyAiAnalysis(request, parts[3], env as AiEnv, workersAiRunner(env as AiEnv));
+  }
+  if (request.method === "POST" && parts.length === 5 && parts[2] === "companies" && parts[4] === "ai-questions") {
+    return askCompanyAiQuestion(request, parts[3], env as AiEnv, workersAiRunner(env as AiEnv));
+  }
   if (request.method === "POST" && parts.length === 5 && parts[2] === "analysis-jobs" && parts[4] === "retry") {
     return retryAnalysisJob(request, parts[3], env);
   }
@@ -291,6 +304,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (parts.length === 3 && parts[2] === "tickers") return tickerSearch(request, env);
   if (parts.length === 4 && parts[2] === "companies") return companyDetails(parts[3], env);
   if (parts.length === 5 && parts[2] === "companies" && parts[4] === "filings") return filingHistory(request, parts[3], env);
+  if (parts.length === 5 && parts[2] === "companies" && parts[4] === "ai-analysis") return getCompanyAiAnalysis(parts[3], env as AiEnv);
   if (parts.length === 5 && parts[2] === "filings" && parts[4] === "financials") return financials(parts[3], env);
   if (parts.length === 5 && parts[2] === "filings" && parts[4] === "ratios") return ratios(parts[3], env);
   if (parts.length === 5 && parts[2] === "filings" && parts[4] === "comparisons") return comparisons(parts[3], env);

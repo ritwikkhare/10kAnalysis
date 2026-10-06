@@ -35,16 +35,16 @@ export function TurnstileWidget({
   useEffect(() => {
     if (!sitekey || !container.current) return;
     let cancelled = false;
-    const render = () => window.turnstile?.ready(() => {
-      if (cancelled || !container.current || widgetId.current) return;
-      widgetId.current = window.turnstile!.render(container.current, {
+    const render = () => {
+      if (cancelled || !container.current || widgetId.current || !window.turnstile) return;
+      widgetId.current = window.turnstile.render(container.current, {
         sitekey,
         action: 'analyze_ticker',
         callback: onToken,
         'expired-callback': () => onToken(''),
         'error-callback': () => onToken(''),
       });
-    });
+    };
     const existing = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
     if (window.turnstile) render();
     else if (existing) existing.addEventListener('load', render, { once: true });
@@ -52,8 +52,7 @@ export function TurnstileWidget({
       const script = document.createElement('script');
       script.id = SCRIPT_ID;
       script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
-      script.async = true;
-      script.defer = true;
+      script.async = false;
       script.addEventListener('load', render, { once: true });
       document.head.appendChild(script);
     }

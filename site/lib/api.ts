@@ -49,6 +49,26 @@ export type AnalysisJob = {
   error_code: string | null;
   can_retry: boolean;
 };
+export type AiClaimKind = 'summary' | 'supporting' | 'opposing' | 'uncertainty' | 'answer';
+export type AiClaim = { claim_id: string; claim_order: number; kind: AiClaimKind; text: string; evidence_ids: string[] };
+export type AiResponse = {
+  response_id: string;
+  ticker: string;
+  response_type: 'analysis' | 'qa';
+  question: string | null;
+  model: string;
+  prompt_version: string;
+  generated_at: string;
+  sentiment: 'bullish' | 'neutral' | 'bearish';
+  confidence: number;
+  refused: boolean;
+  refusal_reason: string | null;
+  validation_status: 'passed';
+  validation_details: Record<string, unknown>;
+  claims: AiClaim[];
+  evidence: Evidence[];
+  disclaimer: string;
+};
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status?: number, public readonly code?: string) {
@@ -113,6 +133,18 @@ export const filingLensApi = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ turnstile_token: turnstileToken }),
+    }),
+  getAiAnalysis: (ticker: string, signal?: AbortSignal) =>
+    request<AiResponse>(`/companies/${encodeURIComponent(ticker)}/ai-analysis`, signal, { cache: 'no-store' }),
+  generateAiAnalysis: (ticker: string, turnstileToken: string, signal?: AbortSignal) =>
+    request<AiResponse>(`/companies/${encodeURIComponent(ticker)}/ai-analysis`, signal, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ turnstile_token: turnstileToken }),
+    }),
+  askAiQuestion: (ticker: string, question: string, turnstileToken: string, signal?: AbortSignal) =>
+    request<AiResponse>(`/companies/${encodeURIComponent(ticker)}/ai-questions`, signal, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ question, turnstile_token: turnstileToken }),
     }),
 };
 

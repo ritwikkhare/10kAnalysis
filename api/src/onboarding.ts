@@ -8,7 +8,11 @@ export type AnalysisQueueMessage = {
   cik: string;
 };
 
-export type OnboardingEnv = Env & {
+export type OnboardingEnv = Pick<Env, "DB" | "ANALYSIS_QUEUE" | "TICKER_SEARCH_RATE_LIMITER" | "ONBOARDING_RATE_LIMITER"> & {
+  ONBOARDING_ENABLED?: string;
+  GITHUB_REPOSITORY: string;
+  TURNSTILE_ACTION: string;
+  TURNSTILE_HOSTNAMES: string;
   TURNSTILE_SECRET?: string;
   GITHUB_ONBOARDING_TOKEN?: string;
 };

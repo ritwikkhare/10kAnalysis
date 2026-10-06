@@ -707,3 +707,152 @@ profiling. The Worker configuration has no cron trigger.
 6. Before deployment, run the commands above and verify that `deploy:dry` shows the
    production Turnstile hostname. It packages from `api/wrangler.jsonc`, not a stale
    generated build-directory configuration.
+
+## Stage 4: evidence-grounded AI filing research
+
+Stage 4 adds a validation-gated interpretation layer without moving authoritative
+financial calculations into a language model. The Python pipeline and API remain
+responsible for facts, ratios, matched-period changes, and risk-language diffs. The
+model receives only a bounded packet of those stored objects and their evidence IDs.
+
+The implementation provides:
+
+- a filing-performance brief with explicitly labeled bullish, neutral, or bearish
+  **filing sentiment** (never a stock-return forecast or recommendation);
+- supporting, opposing, and uncertainty claims;
+- filing Q&A that refuses questions unsupported by the packet;
+- a strict JSON response schema, claim-level citation requirements, numeric checks,
+  same-company evidence-graph validation, and direct SEC-source verification;
+- cached D1 records containing model name, prompt version, source-data fingerprint,
+  timestamp, validation metrics, claims, and normalized evidence links; and
+- Turnstile, per-company/per-client rate limits, an 8 KiB request limit, 500-character
+  question limit, model timeout, bounded context, and prompt-injection instructions.
+
+The Workers AI adapter accepts the documented binding response, REST response, and
+OpenAI-compatible chat-completion envelopes. It records only structural metadata
+(envelope name, payload type and length, field names, claim count, refusal flag,
+refusal-reason state, and finish reason), never prompts, filing text, claim text,
+evidence contents, tokens, or credentials. For a non-refusal, an empty or whitespace-
+only refusal reason is normalized to `null`; a meaningful refusal reason is classified
+as `INCONSISTENT_REFUSAL_STATE`. A malformed, truncated, empty non-refusal, or
+inconsistent non-refusal receives exactly one provider-level correction attempt. A
+well-formed response that fails schema, citation, numeric, stock-prediction, or SEC-
+evidence validation is never retried and is never published. A valid refusal must be
+neutral, low-confidence, explain why it refused, and contain no filing claims.
+
+Financial arithmetic is never delegated to the language model. Before inference, the
+Worker materializes an allowlisted set of deterministic calculations in
+`ai_derived_values`. Calculation version `filinglens-calculation-v2` treats stored
+comparison changes as candidates only. It walks each dependency to direct XBRL facts,
+rebuilds ratios from their numerator and denominator, and then calculates changes from
+those full-precision ratios. Rounded percentages and `comparison_changes.change_value`
+are never calculation inputs. Each derived value stores its approved formula, direct
+inputs, dependency path, full-precision result, display precision, exact display value
+and unit, source evidence IDs, and SEC links.
+
+Display rounding uses one documented policy: nearest decimal value with midpoint ties
+rounded away from zero. The model receives only the approved display value and must
+copy it exactly. Before inference and again after inference, the Worker independently
+reproduces every cited derived value. It also checks that percentage-point changes and
+ratio changes agree. Every published claim receives an `ai_numeric_audits` record that
+states whether its financial numbers were reproduced from direct SEC-backed inputs.
+The active prompt version is `filinglens-grounded-v5`, so earlier v3 and v4 cache
+records cannot be served as current results. Version v5 adds a single corrective
+provider retry for structurally empty, malformed, or truncated output; it does not
+retry evidence-validation failures.
+
+The numeric validator still independently normalizes currencies, scale words,
+parenthesized negatives, percentages, basis points, and ratios. It ignores structural
+numbers such as dates, fiscal years, filing forms, Item numbers, accessions, evidence
+IDs, and list numbering. Unsupported arithmetic, excessive rounding, price targets,
+and uncited values reject the complete response; no partial `ai_responses` or
+`ai_claims` records are written.
+
+The website clearly separates this generated interpretation from reported SEC facts.
+Each AI claim opens its SEC evidence in a new tab, and the model/audit metadata is
+inspectable without exposing secrets, hidden prompts, or private reasoning.
+
+### Deployment and local safety boundary
+
+The public Worker and website contain the Stage 4 interface, Workers AI binding,
+rate limiter, and `@cf/meta/llama-3.3-70b-instruct-fp8-fast` model configuration.
+Migration `0007_ai_calculation_audit.sql` and the v4 calculation code were applied
+together. The earlier inaccurate v3 AAPL response was preserved historically and
+administratively invalidated, so it cannot be returned from cache or read endpoints.
+
+Migration 0007 adds `ai_response_invalidations`, allowing an administrator to preserve
+a historical row while excluding it from all read/cache paths. The reusable template
+at `api/admin/invalidate_ai_response.example.sql` contains a placeholder so a response
+ID is never embedded in a migration or accidentally applied to another environment.
+
+The full-precision numeric-grounding fix is verified with deterministic mock model
+responses before any additional production request. `api/test-worker.jsonc` omits the
+Workers AI binding entirely, and tests inject an `AiModelRunner`, so the test suite
+cannot invoke `env.AI.run` or consume production AI resources. Do not manually call
+the live binding during local verification because Workers AI inference is remote and
+can incur usage.
+
+Run the complete mocked verification with:
+
+```powershell
+cd api
+$env:XDG_CONFIG_HOME = "$PWD\.local-config"
+$env:WRANGLER_LOG = "none"
+pnpm test
+pnpm run check
+
+cd ..\site
+pnpm test
+pnpm run lint
+pnpm run build
+cd ..
+```
+
+The Stage 4 evaluation set covers AAPL, MSFT, NVDA, TSLA, GOOG, and AMZN. It checks
+citation validity and coverage, numerical agreement, lexical groundedness,
+deterministic sentiment consistency, prompt-injection rejection, and correct refusal.
+This is a regression gate, not proof that a language model can never make an error.
+Production monitoring and a larger human-reviewed evaluation set remain necessary.
+
+### Provider options and cost control
+
+The adapter targets Cloudflare Workers AI structured output with the active
+`@cf/meta/llama-3.3-70b-instruct-fp8-fast` model, keeping inference beside the
+existing Worker and D1 data. Workers AI pricing is neuron-based and subject to change; consult the current
+[official pricing page](https://developers.cloudflare.com/workers-ai/platform/pricing/)
+before changing traffic limits or models. A future external-provider adapter (for example, the OpenAI API)
+can implement the same `AiModelRunner` contract, but it would require a separate
+secret, egress, budget, and data-handling review. No external provider is selected by
+this milestone.
+
+Cost is bounded by cache keys over company, filing fingerprint, question hash, model,
+and prompt version; short evidence packets; response limits; rate limits; and refusal
+instead of repeated speculative calls. Cached answers are invalidated automatically
+when the source-filing fingerprint, model, or prompt version changes.
+
+### Final production verification
+
+Stage 4 is deployed and verified. The last production defect was an adapter-state
+classification error: Workers AI returned a complete four-claim non-refusal but used
+an empty string for `refusal_reason`. FilingLens preserved that empty string as non-
+null and mislabeled the result `EMPTY_MODEL_OUTPUT` before validating its claims. The
+adapter now normalizes blank non-refusal reasons, distinguishes meaningful
+contradictions as `INCONSISTENT_REFUSAL_STATE`, and enforces the refusal contract
+without weakening any evidence rule.
+
+API version `b05cd6fa-6c13-4ebc-bfe9-f7e6fdbac186` passed one controlled AAPL
+analysis and one controlled AAPL filing-Q&A test on October 6, 2026. The analysis used
+`filinglens-grounded-v5`, returned neutral filing sentiment at 80% confidence, and
+published four claims only after citation and numeric audits passed. In particular,
+the liabilities-to-assets change was independently reproduced from direct SEC facts
+as `-8.195103595752384` percentage points and displayed as `-8.20 percentage points`.
+The Q&A answer reported `$364.36 billion` of current-period revenue and cited the
+corresponding SEC XBRL evidence. Production retained 14 companies, 53 filings, and
+7,075 evidence links; the verification added only its approved AI responses, claims,
+claim-evidence relationships, and numeric audits. No recurring schedule was enabled,
+no other company was analyzed, and no Worker domain was renamed.
+
+The final local regression matrix passes 49 Python tests, 72 API/Worker tests, and 21
+website tests, plus TypeScript checks, generated Worker binding checks, website lint,
+production website build, secret review, and Worker dry-run packaging. All AI tests
+use mocked providers and isolated local D1 data.
