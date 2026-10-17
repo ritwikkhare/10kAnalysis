@@ -16,6 +16,7 @@ import {
   loadGroundingPacket,
   materializeApprovedDerivedEvidence,
   providerResponseMetadata,
+  rankForQuestion,
   validateGroundedOutput,
   AI_CALCULATION_VERSION,
   AI_PROMPT_VERSION,
@@ -1004,5 +1005,120 @@ describe("SEC intelligence API", () => {
       ...base,
       ONBOARDING_RATE_LIMITER: { limit: async () => ({ success: false }) },
     }, challenge)).status).toBe(429);
+  });
+
+  describe("filing Q&A reliability", () => {
+    const qaEnv = (model: string) => ({
+      ...env,
+      AI_ENABLED: "true",
+      AI_MODEL: model,
+      AI_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    } as unknown as AiEnv);
+    const ask = (question: string) => new Request("https://api.example.test/api/v1/companies/TEST/ai-questions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ turnstile_token: "test-token", question }),
+    });
+    const challenge = async () => ({ ok: true } as const);
+    const answer = (...claims: Array<{ text: string; evidence_ids: string[] }>) => ({
+      sentiment: "neutral", confidence: 0.9, refused: false, refusal_reason: null,
+      claims: claims.map((claim) => ({ kind: "answer", ...claim })),
+    });
+    const responseCount = async () => (await env.DB.prepare("SELECT COUNT(*) AS count FROM ai_responses").first<{ count: number }>())!.count;
+
+    it("keeps Item 1A evidence in the packet when financial evidence exceeds the budget", async () => {
+      const extraIds = Array.from({ length: 70 }, (_, index) => `TEST-${CURRENT}-extra-${String(index).padStart(3, "0")}`);
+      await env.DB.batch(extraIds.flatMap((id, index) => [
+        env.DB.prepare("INSERT INTO evidence_links (evidence_id, schema_version, evidence_type, label, filing_accession, source_url) VALUES (?, '1.0.0', 'xbrl_fact', ?, ?, ?)")
+          .bind(id, `Extra fact ${index}`, CURRENT, `https://data.sec.gov/api/xbrl/extra-${index}.json`),
+        env.DB.prepare("INSERT INTO financial_facts VALUES (?, ?, ?, ?, ?, ?, 'USD', 'us-gaap', 'Extra', 'Extra', 'instant', NULL, '2025-12-31', 2025, 'FY', '2026-02-01', ?)")
+          .bind(id, CURRENT, `extra_${String(index).padStart(3, "0")}`, `Extra fact ${index}`, index, `$${index}`, `https://data.sec.gov/api/xbrl/extra-${index}.json`),
+      ]));
+      try {
+        const packet = await loadGroundingPacket(env.DB, "TEST");
+        expect(packet!.items.length).toBeLessThanOrEqual(56);
+        expect(packet!.items.some((entry) => entry.evidence_id === RISK_CHANGE)).toBe(true);
+      } finally {
+        await env.DB.batch(extraIds.flatMap((id) => [
+          env.DB.prepare("DELETE FROM financial_facts WHERE evidence_id = ?").bind(id),
+          env.DB.prepare("DELETE FROM evidence_links WHERE evidence_id = ?").bind(id),
+        ]));
+      }
+    });
+
+    it("ranks plain-English questions to the matching SEC evidence without dropping any", async () => {
+      const packet = (await loadGroundingPacket(env.DB, "TEST"))!;
+      const profit = rankForQuestion(packet, "How profitable was the company?");
+      expect(profit.items).toHaveLength(packet.items.length);
+      expect(profit.items[0].label).toMatch(/net (?:margin|income)/i);
+      const risk = rankForQuestion(packet, "Which risks changed?");
+      expect(risk.items[0].evidence_type).toContain("risk");
+    });
+
+    it("publishes the verified claims of a partly unverifiable answer", async () => {
+      const response = await askCompanyAiQuestion(ask("What was revenue this year?"), "TEST", qaEnv("mock-qa-partial"), async () => answer(
+        { text: "Revenue was $120 for the current fiscal year.", evidence_ids: [FACT] },
+        { text: "Revenue was $999 in another segment.", evidence_ids: [FACT] },
+      ), challenge);
+      const body: any = await response.json();
+      expect(response.status).toBe(201);
+      expect(body.data.claims.map((claim: any) => claim.text)).toEqual(["Revenue was $120 for the current fiscal year."]);
+      expect(body.data.validation_details).toMatchObject({ rejected_claim_count: 1, rejected_claim_codes: ["NUMERIC_MISMATCH"] });
+    });
+
+    it("retries once with verification feedback and publishes the corrected answer", async () => {
+      const requests: AiModelRequest[] = [];
+      const response = await askCompanyAiQuestion(ask("How much revenue was reported?"), "TEST", qaEnv("mock-qa-feedback"), async (request) => {
+        requests.push(request);
+        return requests.length === 1
+          ? answer({ text: "Revenue was $999.", evidence_ids: [FACT] })
+          : answer({ text: "Revenue was $120 for the current fiscal year.", evidence_ids: [FACT] });
+      }, challenge);
+      expect(response.status).toBe(201);
+      expect(requests).toHaveLength(2);
+      expect(requests[1].messages.some((message) => message.content.includes("could not be verified"))).toBe(true);
+      expect(JSON.stringify(requests[1].messages)).not.toContain("$999");
+    });
+
+    it("explains an unverifiable answer after the single retry and publishes nothing", async () => {
+      const before = await responseCount();
+      let calls = 0;
+      const response = await askCompanyAiQuestion(ask("What was revenue in the segment?"), "TEST", qaEnv("mock-qa-unverified"), async () => {
+        calls += 1;
+        return answer({ text: "Revenue was $999.", evidence_ids: [FACT] });
+      }, challenge);
+      const body: any = await response.json();
+      expect(response.status).toBe(422);
+      expect(body.data.error.code).toBe("AI_ANSWER_UNVERIFIED");
+      expect(calls).toBe(2);
+      expect(await responseCount()).toBe(before);
+    });
+
+    it("does not serve a cached refusal when the same question is asked again", async () => {
+      let calls = 0;
+      const model = async () => {
+        calls += 1;
+        return calls === 1
+          ? { sentiment: "neutral", confidence: 0.1, refused: true, refusal_reason: "No relevant evidence was found.", claims: [] }
+          : answer({ text: "Net income was $24 for the current fiscal year.", evidence_ids: [CURRENT_NET_INCOME] });
+      };
+      const first = await askCompanyAiQuestion(ask("What was net income?"), "TEST", qaEnv("mock-qa-refusal-cache"), model, challenge);
+      expect((await first.json() as any).data.refused).toBe(true);
+      const second = await askCompanyAiQuestion(ask("what was net income"), "TEST", qaEnv("mock-qa-refusal-cache"), model, challenge);
+      const body: any = await second.json();
+      expect(second.status).toBe(201);
+      expect(body.data.refused).toBe(false);
+      expect(calls).toBe(2);
+      const cached = await askCompanyAiQuestion(ask("What was net income?"), "TEST", qaEnv("mock-qa-refusal-cache"), model, challenge);
+      expect((await cached.json() as any).meta.cached).toBe(true);
+      expect(calls).toBe(2);
+    });
+
+    it("allows ordinary risk-factor language while still blocking recommendations", async () => {
+      const packet = (await loadGroundingPacket(env.DB, "TEST"))!;
+      const claim = (text: string) => ({ sentiment: "neutral", confidence: 0.6, refused: false, refusal_reason: null, claims: [{ kind: "answer", text, evidence_ids: [RISK_CHANGE] }] });
+      expect(validateGroundedOutput(claim("Current risk language notes the stock price may fluctuate and customers may not buy products."), packet, "qa")).toMatchObject({ ok: true });
+      expect(validateGroundedOutput(claim("Current risk language means investors should sell the shares."), packet, "qa")).toMatchObject({ ok: false, code: "STOCK_PREDICTION" });
+    });
   });
 });

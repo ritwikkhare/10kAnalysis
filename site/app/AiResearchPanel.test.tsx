@@ -56,4 +56,33 @@ describe('AI research panel', () => {
     expect(await screen.findByText('Filing evidence is insufficient')).toBeInTheDocument();
     expect(screen.getByText('The filings do not support that conclusion.')).toBeInTheDocument();
   });
+
+  it('lets people ask questions before any analysis exists, using example prompts', async () => {
+    vi.mocked(filingLensApi.getAiAnalysis).mockRejectedValue(new ApiError('missing', 404, 'AI_ANALYSIS_NOT_FOUND'));
+    vi.mocked(filingLensApi.askAiQuestion).mockResolvedValue({
+      ...response, response_type: 'qa', question: 'Which risk factors changed?',
+      claims: [{ claim_id: 'claim-a', claim_order: 0, kind: 'answer', text: 'Revenue increased 20%.', evidence_ids: ['fact-1'] }],
+      validation_details: { rejected_claim_count: 1 },
+    });
+    render(<AiResearchPanel ticker="TEST" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Which risk factors changed?' }));
+    expect(screen.getByLabelText('Ask a filing question')).toHaveValue('Which risk factors changed?');
+    expect(screen.getAllByRole('button', { name: 'Verify' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ask question' }));
+    await waitFor(() => expect(filingLensApi.askAiQuestion).toHaveBeenCalledWith('TEST', 'Which risk factors changed?', 'verified'));
+    expect(await screen.findByText('“Which risk factors changed?”')).toBeInTheDocument();
+    expect(screen.getByText(/One generated statement was left out/)).toBeInTheDocument();
+  });
+
+  it('shows the API explanation when an answer cannot be verified', async () => {
+    vi.mocked(filingLensApi.getAiAnalysis).mockResolvedValue(response);
+    vi.mocked(filingLensApi.askAiQuestion).mockRejectedValue(new ApiError("FilingLens couldn't verify an answer to that question.", 422, 'AI_ANSWER_UNVERIFIED'));
+    render(<AiResearchPanel ticker="TEST" />);
+    await screen.findByText('Revenue increased 20%.');
+    fireEvent.change(screen.getByLabelText('Ask a filing question'), { target: { value: 'What is segment revenue?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ask question' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent("couldn't verify an answer");
+  });
 });

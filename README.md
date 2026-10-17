@@ -62,9 +62,11 @@ flowchart LR
 - **The model never does the math.** The backend calculates every derived value from
   direct SEC facts at full precision. The model must copy the approved display value,
   and the backend independently reproduces each cited number after inference.
-- **Fail closed.** If an AI claim cites missing evidence, uses an unsupported number,
-  or makes a price forecast, the whole response is rejected. Missing facts stay
-  missing, and dependent ratios are skipped instead of estimated.
+- **Fail closed.** An AI claim that cites missing evidence, uses an unsupported
+  number, or makes a price forecast is never shown. A research brief is rejected as a
+  whole; a Q&A answer publishes only its verified statements, after at most one
+  corrective retry. Missing facts stay missing, and dependent ratios are skipped
+  instead of estimated.
 - **Idempotent imports.** Filings are keyed by immutable SEC accession numbers, so
   retries and repeated refreshes can't duplicate or overwrite data.
 - **Bounded cost and abuse.** Turnstile, per-client rate limits, request-size limits,
@@ -96,8 +98,8 @@ All tests run offline against saved SEC responses and mocked AI providers.
 
 ```bash
 python -m unittest -v                # 49 Python pipeline tests
-cd api && pnpm install && pnpm test  # 72 API / Worker tests
-cd site && pnpm install && pnpm test # 21 website tests
+cd api && pnpm install && pnpm test  # 79 API / Worker tests
+cd site && pnpm install && pnpm test # 23 website tests
 ```
 
 ## Scope and limitations

@@ -4,6 +4,15 @@
 > reference. For a short overview, see the [README](../README.md). Later changes:
 > the filing refresh workflow now also runs on a weekday schedule, and the Python
 > tests run with `python -m unittest` without installing the package first.
+>
+> Prompt version `filinglens-grounded-v6` (October 2026) reworked filing Q&A: the
+> evidence packet reserves room for Item 1A risk items, questions rank the full packet
+> (with stemming and plain-English synonyms) instead of trimming it, each Q&A claim is
+> validated on its own so verified statements publish while unverifiable ones are left
+> out, one corrective retry with validation feedback runs when no claim verifies, Q&A
+> refusals are no longer served from cache, and the stock-prediction filter targets
+> recommendations rather than ordinary risk-factor wording. Research briefs keep the
+> all-or-nothing validation described below.
 
 **Live demo:** <https://filinglens.ritwikkhare.workers.dev>
 

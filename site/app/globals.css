@@ -157,7 +157,14 @@ h2 { font-size: clamp(2.5rem,4vw,4.4rem); line-height: 1; }
 .ai-qa { display: grid; gap: 12px; }
 .ai-qa h4, .ai-generate h4 { margin: 0; font: 500 1.4rem Georgia,serif; }
 .ai-qa textarea { min-height: 100px; padding: 13px; border: 1px solid var(--line); border-radius: 8px; resize: vertical; font: inherit; }
-.ai-answer { padding-top: 20px; border-top: 1px solid var(--line); }
+.ai-answer { display: grid; gap: 10px; padding-top: 20px; border-top: 1px solid var(--line); }
+.ai-asked { margin: 0; color: var(--muted); font: italic 500 14px/1.5 Georgia,serif; }
+.ai-verify { display: grid; gap: 10px; padding: 16px 20px; border: 1px dashed var(--line); border-radius: 12px; }
+.ai-verify p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.ai-examples { display: flex; flex-wrap: wrap; gap: 8px; }
+.ai-examples button { padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--forest-2); font: 700 11px/1.3 inherit; cursor: pointer; text-align: left; }
+.ai-examples button:hover, .ai-examples button:focus-visible { border-color: var(--forest-2); }
+.ai-removed-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .risk-stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 20px; }
 .risk-stats article { display: flex; align-items: baseline; gap: 10px; padding: 16px; border-radius: 10px; background: var(--paper-2); }
 .risk-stats strong { font: 500 2rem Georgia,serif; }
