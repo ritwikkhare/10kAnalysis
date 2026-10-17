@@ -1,0 +1,896 @@
+# FilingLens build log
+
+> This is the detailed, stage-by-stage record of how FilingLens was built, kept for
+> reference. For a short overview, see the [README](../README.md). Later changes:
+> the filing refresh workflow now also runs on a weekday schedule, and the Python
+> tests run with `python -m unittest` without installing the package first.
+
+**Live demo:** <https://filinglens.ritwikkhare.workers.dev>
+
+## About this project
+
+FilingLens is an evidence-grounded research platform for SEC 10-K and 10-Q filings.
+A Python ingestion pipeline resolves tickers, downloads official EDGAR filings,
+normalizes XBRL facts, matches fiscal periods, calculates ratios, and compares Item 1A
+risk language. Cloudflare Workers, Queues, and D1 provide asynchronous company
+onboarding, storage, and a read-only API; the responsive web application presents the
+results.
+
+The core design rule is traceability. Every reported fact retains its SEC URL; every
+ratio and comparison identifies its input evidence; and AI claims are published only
+after schema, citation, and numeric validation. Derived numbers are reproduced by the
+backend from SEC-backed inputs, and unsupported output fails closed rather than being
+shown as a conclusion.
+
+![FilingLens dashboard](screenshots/filinglens-desktop.png)
+
+The project downloads a company's latest annual or quarterly filing (Form 10-K or
+10-Q) directly from the official SEC EDGAR service. It saves both the original HTML
+filing and metadata containing the filing date, accession number, and source URL.
+
+The ticker is resolved through the SEC company list. The tested pilot covers Apple
+(`AAPL`), Microsoft (`MSFT`), NVIDIA (`NVDA`), and Tesla (`TSLA`), and the same download
+flow works for other public-company tickers in that list.
+
+## Requirements
+
+- Python 3.11 or newer
+- An internet connection
+- Your name and email address for the SEC request header
+
+Check that Python is available:
+
+```powershell
+python --version
+```
+
+If PowerShell says that `python` is not recognized, install a current Python release
+from <https://www.python.org/downloads/windows/> and enable the installer's
+**Add Python to PATH** option. Then close and reopen PowerShell before continuing.
+
+The SEC asks automated programs to identify themselves with a descriptive user agent.
+The email is sent only as an HTTP request header to the SEC; it is not saved by this
+project.
+
+## Set up the project
+
+Open PowerShell in this folder and run:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -e .
+```
+
+No third-party runtime packages are needed for this milestone.
+
+## Download a company's latest filing
+
+Set your SEC contact information for the current PowerShell session:
+
+```powershell
+$env:SEC_USER_AGENT = "Your Name your.email@example.com"
+```
+
+Then download the filing:
+
+```powershell
+python -m sec_filing AAPL
+```
+
+`10-K` is the default. To download the latest quarterly filing instead:
+
+```powershell
+python -m sec_filing MSFT --form 10-Q
+```
+
+Every company is stored separately under its normalized ticker:
+
+```text
+data/filings/<TICKER>/<accession-number>/
+```
+
+To download the filing and extract its headline financial values:
+
+```powershell
+python -m sec_filing AAPL --extract-financials
+```
+
+Financial extraction and ratio calculation also work on a single 10-Q:
+
+```powershell
+python -m sec_filing MSFT --form 10-Q --calculate-ratios
+```
+
+To extract the values and calculate traceable financial ratios:
+
+```powershell
+python -m sec_filing AAPL --calculate-ratios
+```
+
+To download the two latest 10-Ks and compare them year over year:
+
+```powershell
+python -m sec_filing AAPL --compare-previous
+```
+
+For a 10-Q, `--compare-previous` finds the same SEC fiscal period in the prior fiscal
+year instead of comparing adjacent quarters:
+
+```powershell
+python -m sec_filing NVDA --form 10-Q --compare-previous
+```
+
+To extract and compare Item 1A Risk Factors from both filings:
+
+```powershell
+python -m sec_filing AAPL --compare-risks
+```
+
+To run the complete pipeline and build the readable HTML report:
+
+```powershell
+python -m sec_filing AAPL --build-report
+```
+
+For example, Apple files will be saved under:
+
+```text
+data/filings/AAPL/<accession-number>/
+├── filing.html
+├── metadata.json
+├── financials.json
+└── ratios.json
+```
+
+`filing.html` is the original SEC document. `metadata.json` contains the company,
+filing date, report date, accession number, official document URL, and filing index URL.
+When financial extraction is requested, `financials.json` contains revenue, net income,
+total assets, total liabilities, and operating cash flow. Every value records its exact
+US-GAAP concept, unit, reporting period, accession number, original filing URL, and SEC
+Company Concept API URL.
+
+When ratio calculation is requested, `ratios.json` contains net margin, operating
+cash-flow margin, and liabilities-to-assets. Each ratio records its formula, numeric
+calculation, evidence IDs, and both input facts with their original SEC links. Ratios
+are calculated by Python rather than generated by an AI model.
+
+Quarterly comparison uses SEC fiscal-year and fiscal-period evidence from at least two
+duration facts to match Q1 with prior-year Q1, Q2 with prior-year Q2, or Q3 with
+prior-year Q3. If the match is missing or ambiguous, the program stops rather than
+silently comparing the wrong periods. Item 1A comparison and the complete HTML risk
+report continue to require `--form 10-K`.
+
+When year-over-year comparison is requested, both accession-number folders receive
+their own filing, metadata, financials, and ratios files. The latest filing folder also
+receives `comparison.json`. Dollar facts use percentage change; ratios use percentage-
+point change. Every comparison embeds separate evidence for the current and previous
+filings, including both filing URLs and all underlying SEC concept links.
+
+Companies can use different standard XBRL concepts for the same metric; for example,
+the pilot accepts both `RevenueFromContractWithCustomerExcludingAssessedTax` and
+`Revenues`. If a supported fact is unavailable, `financials.json` records it under
+`missing_metrics` and `warnings`. Ratios or comparisons that depend on that fact are
+skipped with their own warning instead of being estimated or presented as complete.
+
+Risk comparison creates `risk_factors.json` beside each filing and `risk_changes.json`
+beside the latest filing. The output identifies added, removed, and materially changed
+passages using deterministic text similarity. Every passage keeps its exact text,
+accession number, filing URL, and the closest available filing anchor. The methodology
+and thresholds are saved with the results so the classification is reproducible.
+
+The complete report is saved as `outputs/aapl-sec-intelligence-report.html`. It is a
+self-contained page with financial cards, year-over-year tables, risk filters, side-by-
+side passages, and clickable SEC citations. It does not require a web server or internet
+connection after generation, except when opening the evidence links.
+
+## Versioned data schema
+
+Every generated JSON file uses schema version `1.0.0` and begins with the same reusable
+envelope:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "record_type": "financial_facts",
+  "company": {
+    "cik": "0000320193",
+    "ticker": "AAPL",
+    "name": "Apple Inc."
+  },
+  "filings": [],
+  "evidence": []
+}
+```
+
+`record_type` identifies one of six supported datasets: `filing_metadata`,
+`financial_facts`, `financial_ratios`, `filing_comparison`, `risk_passages`, or
+`risk_changes`. Each filing reference uses the same accession, form, date, and SEC URL
+fields. Each evidence reference has a stable ID, evidence type, accession number, and
+either an official SEC URL or input evidence IDs for a derived result.
+
+The schema validator runs before writing a file. It rejects malformed CIKs and accession
+numbers, unsupported filing forms, duplicate IDs, non-SEC citation URLs, and conclusions
+that cite missing inputs. Existing domain fields such as `facts`, `ratios`, `changes`,
+`company_name`, and `ticker` remain present for compatibility with the current report
+and dashboard code.
+
+Previously generated local JSON files keep their earlier shape until that filing is
+processed again. Rerunning a command upgrades its output files to the current schema.
+
+You may use a different output folder:
+
+```powershell
+python -m sec_filing AAPL --output-dir C:\path\to\filings
+```
+
+## Run the tests
+
+The tests use realistic saved responses rather than contacting the SEC:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+They verify ticker lookup, 10-K and 10-Q selection, annual facts and ratios for Apple,
+Microsoft, NVIDIA, and Tesla, exact prior-year fiscal-quarter matching, missing-fact
+handling, schema validation, saved metadata and HTML, and the SEC user-agent header.
+
+## Data source and access rules
+
+- Filing history: `https://data.sec.gov/submissions/CIK##########.json`
+- Filing documents: `https://www.sec.gov/Archives/edgar/data/...`
+- SEC API documentation: <https://www.sec.gov/search-filings/edgar-application-programming-interfaces>
+- SEC developer guidance: <https://www.sec.gov/about/developer-resources>
+
+The client waits between requests and uses far fewer than the SEC's current limit of
+10 requests per second. Do not remove the user-agent requirement or request delay.
+
+## Stage 3, Step 4: local D1 API
+
+The data API is isolated in `api/`; the existing Apple dashboard remains in `site/` and
+is not changed by this step. The API uses a separate Worker name,
+`filinglens-sec-api`, and a separate D1 database name, `filinglens-sec-data`.
+
+The first migration creates normalized tables for companies, filings, financial facts,
+ratios, filing comparisons and changes, risk passages, risk comparisons and changes,
+and evidence links. Derived facts store edges to their input evidence. The database
+rejects citation URLs unless they use HTTPS on `www.sec.gov` or `data.sec.gov`.
+
+The read-only, versioned routes are:
+
+```text
+GET /api/v1/health
+GET /api/v1/tickers?q=apple
+GET /api/v1/companies/AAPL
+GET /api/v1/companies/AAPL/filings?form=10-K
+GET /api/v1/filings/<accession-number>/financials
+GET /api/v1/filings/<accession-number>/ratios
+GET /api/v1/filings/<accession-number>/comparisons
+GET /api/v1/filings/<accession-number>/risks
+GET /api/v1/evidence/<evidence-id>
+```
+
+Every successful and error response uses the `1.0.0` envelope. Financial facts and
+risk passages return direct SEC URLs. Ratios, comparisons, and risk changes return
+their input evidence IDs, and the evidence endpoint resolves those IDs to the original
+SEC citations. Any non-GET request receives `405 Method Not Allowed`.
+
+### Build and import the local pilot database
+
+Install the API development tools:
+
+```powershell
+cd api
+pnpm install
+pnpm run types
+cd ..
+```
+
+Generate deterministic seed SQL from the processed four-company pilot. The second
+input adds the existing Apple Item 1A risk comparison:
+
+```powershell
+python scripts\build_d1_seed.py `
+  --input work\stage3-live-pilot `
+  --input data\filings `
+  --output work\d1\pilot-seed.sql `
+  --manifest work\d1\pilot-manifest.json
+```
+
+Apply the migration and seed only to Wrangler's local D1 emulator:
+
+```powershell
+cd api
+pnpm exec wrangler d1 migrations apply filinglens-sec-data --local
+pnpm exec wrangler d1 execute filinglens-sec-data --local --file ..\work\d1\pilot-seed.sql
+```
+
+Run validation, Worker integration tests, and the original Python suite:
+
+```powershell
+pnpm run check
+pnpm test
+cd ..
+python -m unittest discover -s tests -v
+```
+
+The checked-in migration and importer are reproducible. The generated database, seed
+SQL, and processed filings remain local and ignored by Git because they can be rebuilt
+from the public SEC data.
+
+### Live Cloudflare API
+
+Stage 3, Step 4 was deployed after explicit approval. The public API is available at:
+
+<https://filinglens-sec-api.ritwikkhare.workers.dev/api/v1/health>
+
+Cloudflare D1 database `filinglens-sec-data` contains the processed AAPL, MSFT, NVDA,
+and TSLA pilot. The separate `filinglens-sec-api` Worker reads from that database. All
+nine public endpoint categories were verified after deployment against the live data.
+
+The API and D1 deployment did not delete or replace the original dashboard Worker.
+The completed multi-company website is now served by the `filinglens` Worker:
+
+<https://filinglens.ritwikkhare.workers.dev/>
+
+## Stage 3, Step 5: multi-company website
+
+The website in `site/` now reads the versioned Cloudflare API instead of importing a
+single bundled Apple dataset. It supports the four-company pilot (`AAPL`, `MSFT`,
+`NVDA`, and `TSLA`) with:
+
+- ticker and company-name search;
+- selectable 10-K and 10-Q filing history;
+- financial facts and transparent ratio calculations;
+- year-over-year comparisons that use the API's validated fiscal-period match;
+- side-by-side Item 1A changes when a risk comparison is available;
+- direct SEC links for reported facts, ratio inputs, comparisons, and risk passages;
+- explicit loading, unavailable, empty, and unsupported-data states; and
+- responsive desktop and mobile layouts.
+
+The UI does not generate investment sentiment. Numeric direction is not labeled as
+favorable or unfavorable, and unavailable facts or comparisons are not estimated.
+
+### Run the website locally
+
+Install Node.js 22 or newer, then open PowerShell in the project folder:
+
+```powershell
+cd site
+pnpm install
+pnpm check
+pnpm dev
+```
+
+Open the local URL shown in the terminal (normally <http://localhost:3000>). Keep the
+terminal running while using the site. `pnpm check` runs ESLint, nine frontend/API-
+client tests, and a production build.
+
+The deployed API is the default data source. To test against another compatible API,
+set an override before starting the site:
+
+```powershell
+$env:NEXT_PUBLIC_API_BASE_URL = "http://127.0.0.1:8787/api/v1"
+pnpm dev
+```
+
+The override must implement schema version `1.0.0` and the Step 4 endpoint contract.
+Stage 3, Step 5 was originally deployed to the `filinglens-apple-sec` Worker on
+August 31, 2026. The completed platform is now deployed under the shorter
+`filinglens` Worker name. The public website is available at:
+
+<https://filinglens.ritwikkhare.workers.dev/>
+
+## Stage 3, Step 6: automated filing refresh
+
+Step 6 adds a safe refresh pipeline without enabling it in production yet. The
+pipeline checks Apple, Microsoft, NVIDIA, and Tesla for their latest 10-K and 10-Q,
+compares the immutable SEC accession numbers with the filings already in D1, and
+processes only filings that are not already stored.
+
+For each new filing, the existing Python pipeline downloads the official filing,
+extracts facts, calculates ratios, selects the valid prior-year fiscal quarter for a
+10-Q comparison, and compares Item 1A passages for a 10-K. Every generated document
+must pass the versioned schema and evidence-reference validation before SQL is
+created. The importer uses stable primary keys and `INSERT OR IGNORE`, so rerunning
+the same refresh cannot duplicate a filing or erase existing data.
+
+The new D1 migration adds three operational tables:
+
+- `refresh_runs` records each refresh attempt and its aggregate result;
+- `company_refresh_status` records the last check, last success, most recent
+  accession, and safe status message for each company; and
+- `refresh_failures` records the ticker, form, stage, and diagnostic message for a
+  failed target without publishing unvalidated filing data.
+
+After the API and website changes are eventually deployed, company responses and the
+dashboard can show `Up to date`, `Updated`, `Update issue`, or `Never checked`, plus
+the last checked time. A read-only `GET /api/v1/refresh-status` endpoint also exposes
+the latest run and all company statuses in the standard `1.0.0` API envelope.
+
+### Test Step 6 locally
+
+No SEC request is needed for the automated tests. From the project folder, run:
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+cd api
+pnpm test
+pnpm run check
+cd ..\site
+pnpm check
+cd ..
+```
+
+The refresh-specific tests verify accession-number deduplication, schema rejection,
+failure recording, idempotent status updates, and compatibility with both D1
+migrations. The API tests verify the new status fields and endpoint, while the UI
+tests verify that freshness is displayed to users.
+
+To perform an optional one-time local SEC check, use an honest contact address in the
+SEC user agent and a Wrangler JSON export containing the accessions to skip:
+
+```powershell
+$env:SEC_USER_AGENT = "FilingLens your-email@example.com"
+.venv\Scripts\python.exe scripts\refresh_filings.py `
+  --known-accessions work\refresh\known-accessions.json `
+  --output-dir work\refresh\processed `
+  --sql-output work\refresh\import.sql `
+  --manifest work\refresh\manifest.json `
+  --trigger-type manual
+```
+
+This writes processed data, idempotent import SQL, and a diagnostic manifest under
+the ignored `work/` directory. It does not update remote D1 by itself.
+
+### Production deployment and refresh activation
+
+`.github/workflows/refresh-filings.yml` is checked in as a manual-only workflow. It
+has **no `schedule` event**, and no Cloudflare recurring trigger has been added. It
+will require these GitHub Actions secrets before a manually approved production run:
+
+- `CLOUDFLARE_API_TOKEN`, limited to the required D1 account/database permissions;
+- `CLOUDFLARE_ACCOUNT_ID`; and
+- `SEC_USER_AGENT`, containing the project name and a real contact email address.
+
+The additive D1 migration, data API, and website status UI were deployed and
+verified on September 1, 2026 after explicit approval. The deployment preserved all
+existing pilot filings. The refresh workflow itself remains manual-only: configure
+the three GitHub Actions secrets above, run and inspect one manual refresh, and only
+then add a recurring schedule after separate explicit approval.
+
+## Stage 3, Step 7A: universal SEC ticker discovery
+
+Step 7A separates **finding a public company** from **analyzing its filings**. The
+search API can now query the SEC's official ticker-to-CIK directory instead of only
+the four pilot companies. Each result is labeled `available` when FilingLens already
+has processed data in D1, or `requires_analysis` when it is only a directory match.
+Selecting a directory-only result never downloads or processes a filing.
+
+The source is the SEC's official
+<https://www.sec.gov/files/company_tickers.json> file. The synchronization script:
+
+- requires an honest `SEC_USER_AGENT` containing a contact email;
+- validates every ticker, CIK, and company name before creating SQL;
+- caches the raw response and SHA-256 metadata under the ignored `data/sec/` folder;
+- sends `If-None-Match` and `If-Modified-Since` on later runs so an unchanged file is
+  not downloaded again; and
+- creates a batched, idempotent D1 import under the ignored `work/` folder; Wrangler's
+  managed remote import provides rollback if execution fails.
+
+From the project folder, refresh the local directory with:
+
+```powershell
+$env:SEC_USER_AGENT = "FilingLens your-email@example.com"
+.venv\Scripts\python.exe scripts\sync_sec_tickers.py
+```
+
+Apply the new schema and generated directory to a local D1 database only:
+
+```powershell
+cd api
+pnpm exec wrangler d1 migrations apply DB --local
+pnpm exec wrangler d1 execute DB --local --file ..\work\sec-directory\import.sql
+cd ..
+```
+
+`GET /api/v1/tickers?q=AMZN&limit=10` searches ticker and company name, prioritizes
+exact and prefix matches, and returns directory provenance plus availability. An
+empty query still returns the analyzed-company list used by the dashboard shortcuts.
+Directory rows are cached persistently in D1, while joined search responses use
+`no-store` so a newly completed company becomes available immediately. Search input
+is bounded and protected by a Cloudflare rate-limit binding set to 60 requests per
+minute per connecting IP. A directory-only company detail request returns the clear
+`COMPANY_NOT_ANALYZED` error instead of pretending that filing data exists.
+
+Local verification covers directory download/cache behavior, malformed source data,
+idempotent SQL, the complete D1 import, API availability labels and rate limiting,
+website discovery states, accessibility-oriented result labels, linting, type checks,
+and a production website build. The additive migration, 10,391-entry directory,
+API search, and website interface were deployed on September 1, 2026 after explicit
+approval. The deployment preserved the four analyzed companies and 13 processed
+filings and did not process any new company filings.
+
+## Stage 3, Step 7B: asynchronous company onboarding
+
+Step 7B is implemented and its production infrastructure and interface have been
+deployed behind a fail-closed feature flag. A directory-only search result now has an “Analyze this
+ticker” flow. The browser submits a one-time Cloudflare Turnstile token, receives a
+job immediately, and polls its status without holding the page open or blocking the
+existing dashboard.
+
+The request path is intentionally split across environments:
+
+1. The API verifies Turnstile server-side, applies a separate three-requests-per-
+   minute Cloudflare rate limit, validates the ticker against the synchronized SEC
+   directory, and inserts one `queued` D1 job.
+2. A Cloudflare Queue provides at-least-once delivery. The consumer is idempotent,
+   handles every message explicitly, and dispatches the job to the Python-capable
+   GitHub Actions runner. Duplicate live requests return the existing job.
+3. `scripts/onboard_company.py` resolves the ticker and CIK again, processes the
+   latest 10-K and 10-Q, and validates every versioned document and evidence edge.
+4. Only a completely valid result produces company/filing import SQL. The SQL uses
+   stable keys and `INSERT OR IGNORE`; retries cannot duplicate or delete data.
+   Any failure publishes only a safe job status and a private diagnostic record.
+
+Migration `0004_analysis_jobs.sql` adds `analysis_jobs` and
+`analysis_job_failures`. Public jobs use `queued`, `processing`, `completed`,
+`failed`, or `unsupported`; failed jobs permit a bounded retry until
+`max_attempts` is reached. A partial company result is never published.
+
+### Step 7B API contract
+
+```text
+POST /api/v1/companies/{ticker}/analysis
+GET  /api/v1/analysis-jobs/{job_id}
+POST /api/v1/analysis-jobs/{job_id}/retry
+```
+
+POST bodies contain `{ "turnstile_token": "..." }`. Turnstile tokens are checked
+only by the Worker and are single-use. The API requires a successful verification,
+the exact `analyze_ticker` action, and an allowed hostname. It fails closed when the
+challenge service or configuration is unavailable. Job IDs contain no secret data,
+and the status endpoint never returns diagnostic messages or credentials.
+
+### Local verification
+
+The checked-in Wrangler configuration omits `ONBOARDING_ENABLED`, and the Worker
+fails closed unless it is explicitly set to `true`, so an accidental deployment
+cannot activate processing. Automated tests call the same
+handlers with controlled local bindings and mocked challenge/dispatch responses.
+
+From the project folder:
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+cd api
+pnpm install
+pnpm run types
+pnpm test
+pnpm run check
+pnpm run deploy:dry
+cd ..\site
+pnpm install
+pnpm check
+cd ..
+```
+
+For an interactive local UI test, create a Turnstile widget restricted to
+`localhost` and `127.0.0.1` after approval. Copy `api/.dev.vars.example` to
+`api/.dev.vars` and `site/.env.example` to `site/.env.local`, then supply the secret
+only in `.dev.vars` and the public site key only in `.env.local`. Both real files are
+ignored by Git. Never put the Turnstile secret in the website environment.
+
+### Production rollout status
+
+After explicit approval, migration 0004, the Queue and dead-letter queue, production
+Turnstile widget, API, and website were deployed. Existing companies, filings, and
+evidence links were preserved. Turnstile, queue delivery, duplicate prevention,
+bounded retries, rate limits, and failure logging remain active. No recurring
+schedule is configured.
+
+## Stage 3, Step 7C: generalized 10-K/10-Q analysis
+
+Step 7C removes the pilot-company assumptions from the local processing path. It is
+designed for an SEC directory ticker whose issuer has a usable standard 10-K and
+10-Q history. The pipeline now:
+
+- resolves the official ticker and CIK and classifies unsupported filing histories;
+- ignores 10-K/A and 10-Q/A as separate fiscal periods and loads SEC archived
+  submission pages when a comparison accession has left the recent list;
+- resolves revenue through an ordered, evidence-preserving set of common US-GAAP
+  concepts, rejects ambiguous duplicate contexts, and leaves unsupported facts
+  missing instead of estimating them;
+- selects annual and quarterly comparison accessions by the SEC fiscal-year and
+  fiscal-period identity in Company Facts, including same-quarter prior-year 10-Qs;
+- calculates a ratio only when both cited inputs are present and the denominator is
+  nonzero;
+- recognizes common Item 1A heading and boundary variations, ignores table-of-
+  contents matches, and keeps passage-level SEC links; and
+- validates the complete schema/evidence graph before producing idempotent D1 SQL.
+
+Ticker search availability is deliberately uncached at the API and browser layers.
+When a job completes, the website reloads the company list and opens the new
+dashboard immediately, so it does not remain labeled **Analysis required**.
+
+### The exact boundary of “any ticker”
+
+“Any ticker” means any company present in the official SEC ticker directory that
+has sufficiently complete, standard 10-K and 10-Q filings and filing-matched
+US-GAAP facts. It does **not** mean that every SEC directory entry can be forced
+into this analysis. Foreign private issuers using 20-F/40-F and 6-K, registered
+funds using N-CSR/N-PORT, inactive companies, companies without both standard
+forms, and companies without enough prior-year history are reported as unsupported
+or insufficient. FilingLens never substitutes an unrelated filing, adds financial
+components, or invents a missing value.
+
+Some supported companies will expose fewer facts, ratios, or comparisons than
+others. That is an honest data result: a missing metric remains visible through an
+empty state or warning, and dependent calculations are skipped. Item 1A analysis
+also requires extractable annual risk text in both matched 10-K documents.
+
+### Step 7C verification and processor synchronization
+
+No production SEC onboarding or Cloudflare resource is needed for the test suite.
+The tests use SEC-shaped response fixtures, mocked queue and Turnstile behavior, an
+isolated D1 database, and the local Worker/site test runtimes:
+
+```powershell
+$python = "C:\Users\hello\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+$env:PYTHONPATH = "src"
+& $python -m unittest discover -s tests -v
+
+cd api
+$env:XDG_CONFIG_HOME = "$PWD\.local-config"
+$env:WRANGLER_LOG = "none"
+pnpm test
+pnpm run check
+pnpm run deploy:dry
+
+cd ..\site
+.\node_modules\.bin\vitest.cmd run
+pnpm run lint
+pnpm run build
+cd ..
+```
+
+The generalized onboarding fixture test processes COST, JPM, BA, DUK, and CRM as
+five previously unavailable examples spanning retail, banking, industrials,
+utilities, and software. It covers five revenue concept choices, annual and
+same-fiscal-quarter comparisons, missing-data-safe ratios, Item 1A changes,
+clickable SEC citations, schema validation, deterministic D1 import, and complete
+dashboard data. Separate tests cover amendments, archived submission pages,
+foreign issuers, funds, inactive issuers, insufficient form histories, duplicate
+requests, retries, rate limits, queue handling, and immediate availability refresh.
+
+The Step 7C API and website were deployed after explicit approval on September 7,
+2026. The first controlled COST request then exposed a source synchronization issue:
+the Worker dispatched GitHub Actions correctly, but the generalized Python processor
+still existed only in the local checkout. The September 13 reconciliation preserves
+the GitHub Step 7A/7B history, merges the complete Step 7C processor into `main`, and
+keeps the working Turnstile render fix.
+
+The default pipeline runner now captures the precise bounded CLI error instead of
+replacing it with only an exit status. Failed target details are stored in the
+private diagnostic record, included in the retained manifest, and printed in the
+GitHub Action log; the public API continues to return a safe generic message.
+
+A live local-only COST run completed both forms using official SEC data: the current
+and prior-year 10-K, Item 1A comparison, and the current and same-fiscal-quarter
+prior-year 10-Q. The resulting schema and evidence graph passed validation and
+generated idempotent import SQL. This test did not contact production D1 or retry the
+failed production job. No new migration, Queue, Turnstile setting, secret, deployment,
+or recurring schedule is part of this reconciliation.
+
+### Universal-onboarding hardening
+
+The broader local verification found several general pipeline defects rather than a
+ticker allowlist:
+
+- GitHub onboarding must explicitly check out `main`, and every manifest records the
+  exact source revision used by the job.
+- Bank revenue can use `RevenuesNetOfInterestExpense`; this is now a normal ordered
+  concept alias rather than a company-specific exception.
+- Some combined-registrant filings contain valid inline XBRL even though SEC Company
+  Facts has no rows for that accession. FilingLens now has a strict fallback that
+  accepts only US-GAAP USD facts for the requested CIK, exact report end date, and
+  consolidated non-dimensioned context. Every fallback fact links to its exact filing
+  element. Missing or conflicting facts remain unsupported.
+- Item 1A blocks were previously emitted in HTML closing order, and later cross-
+  references to Item 1A could be mistaken for headings. Blocks now retain document
+  order, headings are matched strictly, exact duplicates are removed, and passage
+  matching uses bounded candidates instead of an all-pairs comparison.
+- Ratios now require both inputs to share the same validated measurement period.
+- Temporary GitHub dispatch failures no longer consume a filing-processing attempt.
+  Terminal dispatch failures and retry exhaustion create durable diagnostic rows.
+- CLI failures retain their precise stage, such as `match_prior_filing` or
+  `compare_risks`, in the job manifest and D1 failure record.
+
+Local SEC runs completed for COST, JPM, BA, DUK, and CRM. These cover retail,
+banking, industrials, utilities, and software with different fiscal calendars and
+XBRL concepts. The final regression suite passes 49 Python tests, 22 Worker/API
+tests, and 18 website tests, plus TypeScript checks, generated-binding checks,
+website lint and production build, Worker dry-run packaging, and Worker startup
+profiling. The Worker configuration has no cron trigger.
+
+### Onboarding troubleshooting
+
+1. Open the analysis job status and note `failure_stage` and `error_code`; the public
+   message is intentionally safe and does not expose private diagnostics.
+2. Download the matching GitHub Actions `filinglens-onboarding-<run>` artifact. Its
+   manifest contains the source revision, per-form stage, exception type, and bounded
+   diagnostic detail.
+3. Confirm the run checked out current `main`. A stale revision can execute an older
+   processor even when the Worker is current.
+4. Treat `unsupported` as a classification, not a retryable crash. Foreign issuers,
+   funds, inactive issuers, and companies without enough comparable 10-K/10-Q history
+   cannot be made reliable by repeated retries.
+5. For missing facts, inspect the saved warnings and SEC evidence. FilingLens skips
+   dependent ratios and comparisons instead of synthesizing values.
+6. Before deployment, run the commands above and verify that `deploy:dry` shows the
+   production Turnstile hostname. It packages from `api/wrangler.jsonc`, not a stale
+   generated build-directory configuration.
+
+## Stage 4: evidence-grounded AI filing research
+
+Stage 4 adds a validation-gated interpretation layer without moving authoritative
+financial calculations into a language model. The Python pipeline and API remain
+responsible for facts, ratios, matched-period changes, and risk-language diffs. The
+model receives only a bounded packet of those stored objects and their evidence IDs.
+
+The implementation provides:
+
+- a filing-performance brief with explicitly labeled bullish, neutral, or bearish
+  **filing sentiment** (never a stock-return forecast or recommendation);
+- supporting, opposing, and uncertainty claims;
+- filing Q&A that refuses questions unsupported by the packet;
+- a strict JSON response schema, claim-level citation requirements, numeric checks,
+  same-company evidence-graph validation, and direct SEC-source verification;
+- cached D1 records containing model name, prompt version, source-data fingerprint,
+  timestamp, validation metrics, claims, and normalized evidence links; and
+- Turnstile, per-company/per-client rate limits, an 8 KiB request limit, 500-character
+  question limit, model timeout, bounded context, and prompt-injection instructions.
+
+The Workers AI adapter accepts the documented binding response, REST response, and
+OpenAI-compatible chat-completion envelopes. It records only structural metadata
+(envelope name, payload type and length, field names, claim count, refusal flag,
+refusal-reason state, and finish reason), never prompts, filing text, claim text,
+evidence contents, tokens, or credentials. For a non-refusal, an empty or whitespace-
+only refusal reason is normalized to `null`; a meaningful refusal reason is classified
+as `INCONSISTENT_REFUSAL_STATE`. A malformed, truncated, empty non-refusal, or
+inconsistent non-refusal receives exactly one provider-level correction attempt. A
+well-formed response that fails schema, citation, numeric, stock-prediction, or SEC-
+evidence validation is never retried and is never published. A valid refusal must be
+neutral, low-confidence, explain why it refused, and contain no filing claims.
+
+Financial arithmetic is never delegated to the language model. Before inference, the
+Worker materializes an allowlisted set of deterministic calculations in
+`ai_derived_values`. Calculation version `filinglens-calculation-v2` treats stored
+comparison changes as candidates only. It walks each dependency to direct XBRL facts,
+rebuilds ratios from their numerator and denominator, and then calculates changes from
+those full-precision ratios. Rounded percentages and `comparison_changes.change_value`
+are never calculation inputs. Each derived value stores its approved formula, direct
+inputs, dependency path, full-precision result, display precision, exact display value
+and unit, source evidence IDs, and SEC links.
+
+Display rounding uses one documented policy: nearest decimal value with midpoint ties
+rounded away from zero. The model receives only the approved display value and must
+copy it exactly. Before inference and again after inference, the Worker independently
+reproduces every cited derived value. It also checks that percentage-point changes and
+ratio changes agree. Every published claim receives an `ai_numeric_audits` record that
+states whether its financial numbers were reproduced from direct SEC-backed inputs.
+The active prompt version is `filinglens-grounded-v5`, so earlier v3 and v4 cache
+records cannot be served as current results. Version v5 adds a single corrective
+provider retry for structurally empty, malformed, or truncated output; it does not
+retry evidence-validation failures.
+
+The numeric validator still independently normalizes currencies, scale words,
+parenthesized negatives, percentages, basis points, and ratios. It ignores structural
+numbers such as dates, fiscal years, filing forms, Item numbers, accessions, evidence
+IDs, and list numbering. Unsupported arithmetic, excessive rounding, price targets,
+and uncited values reject the complete response; no partial `ai_responses` or
+`ai_claims` records are written.
+
+The website clearly separates this generated interpretation from reported SEC facts.
+Each AI claim opens its SEC evidence in a new tab, and the model/audit metadata is
+inspectable without exposing secrets, hidden prompts, or private reasoning.
+
+### Deployment and local safety boundary
+
+The public Worker and website contain the Stage 4 interface, Workers AI binding,
+rate limiter, and `@cf/meta/llama-3.3-70b-instruct-fp8-fast` model configuration.
+Migration `0007_ai_calculation_audit.sql` and the v4 calculation code were applied
+together. The earlier inaccurate v3 AAPL response was preserved historically and
+administratively invalidated, so it cannot be returned from cache or read endpoints.
+
+Migration 0007 adds `ai_response_invalidations`, allowing an administrator to preserve
+a historical row while excluding it from all read/cache paths. The reusable template
+at `api/admin/invalidate_ai_response.example.sql` contains a placeholder so a response
+ID is never embedded in a migration or accidentally applied to another environment.
+
+The full-precision numeric-grounding fix is verified with deterministic mock model
+responses before any additional production request. `api/test-worker.jsonc` omits the
+Workers AI binding entirely, and tests inject an `AiModelRunner`, so the test suite
+cannot invoke `env.AI.run` or consume production AI resources. Do not manually call
+the live binding during local verification because Workers AI inference is remote and
+can incur usage.
+
+Run the complete mocked verification with:
+
+```powershell
+cd api
+$env:XDG_CONFIG_HOME = "$PWD\.local-config"
+$env:WRANGLER_LOG = "none"
+pnpm test
+pnpm run check
+
+cd ..\site
+pnpm test
+pnpm run lint
+pnpm run build
+cd ..
+```
+
+The Stage 4 evaluation set covers AAPL, MSFT, NVDA, TSLA, GOOG, and AMZN. It checks
+citation validity and coverage, numerical agreement, lexical groundedness,
+deterministic sentiment consistency, prompt-injection rejection, and correct refusal.
+This is a regression gate, not proof that a language model can never make an error.
+Production monitoring and a larger human-reviewed evaluation set remain necessary.
+
+### Provider options and cost control
+
+The adapter targets Cloudflare Workers AI structured output with the active
+`@cf/meta/llama-3.3-70b-instruct-fp8-fast` model, keeping inference beside the
+existing Worker and D1 data. Workers AI pricing is neuron-based and subject to change; consult the current
+[official pricing page](https://developers.cloudflare.com/workers-ai/platform/pricing/)
+before changing traffic limits or models. A future external-provider adapter (for example, the OpenAI API)
+can implement the same `AiModelRunner` contract, but it would require a separate
+secret, egress, budget, and data-handling review. No external provider is selected by
+this milestone.
+
+Cost is bounded by cache keys over company, filing fingerprint, question hash, model,
+and prompt version; short evidence packets; response limits; rate limits; and refusal
+instead of repeated speculative calls. Cached answers are invalidated automatically
+when the source-filing fingerprint, model, or prompt version changes.
+
+### Final production verification
+
+Stage 4 is deployed and verified. The last production defect was an adapter-state
+classification error: Workers AI returned a complete four-claim non-refusal but used
+an empty string for `refusal_reason`. FilingLens preserved that empty string as non-
+null and mislabeled the result `EMPTY_MODEL_OUTPUT` before validating its claims. The
+adapter now normalizes blank non-refusal reasons, distinguishes meaningful
+contradictions as `INCONSISTENT_REFUSAL_STATE`, and enforces the refusal contract
+without weakening any evidence rule.
+
+API version `b05cd6fa-6c13-4ebc-bfe9-f7e6fdbac186` passed one controlled AAPL
+analysis and one controlled AAPL filing-Q&A test on October 6, 2026. The analysis used
+`filinglens-grounded-v5`, returned neutral filing sentiment at 80% confidence, and
+published four claims only after citation and numeric audits passed. In particular,
+the liabilities-to-assets change was independently reproduced from direct SEC facts
+as `-8.195103595752384` percentage points and displayed as `-8.20 percentage points`.
+The Q&A answer reported `$364.36 billion` of current-period revenue and cited the
+corresponding SEC XBRL evidence. Production retained 14 companies, 53 filings, and
+7,075 evidence links; the verification added only its approved AI responses, claims,
+claim-evidence relationships, and numeric audits. No recurring schedule was enabled,
+no other company was analyzed. The final launch renamed the public website Worker to
+`filinglens` and the account workers.dev subdomain to `ritwikkhare`.
+
+The final local regression matrix passes 49 Python tests, 72 API/Worker tests, and 21
+website tests, plus TypeScript checks, generated Worker binding checks, website lint,
+production website build, secret review, and Worker dry-run packaging. All AI tests
+use mocked providers and isolated local D1 data.
+
+## Portfolio materials
+
+- [Resume-ready project bullets](RESUME.md)
+- [Desktop and mobile screenshots](screenshots/README.md)
+- Public website: <https://filinglens.ritwikkhare.workers.dev>
+
+## Future options
+
+The production platform is complete without these additions. Possible later work
+includes uptime and error-rate monitoring, a larger human-reviewed AI evaluation set,
+and a custom domain. These are intentionally not enabled in the current deployment;
+recurring filing schedules also remain disabled.
