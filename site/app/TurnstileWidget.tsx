@@ -7,6 +7,7 @@ type TurnstileApi = {
   render(container: HTMLElement, options: {
     sitekey: string;
     action: string;
+    theme?: 'auto' | 'light' | 'dark';
     callback(token: string): void;
     'expired-callback'(): void;
     'error-callback'(): void;
@@ -40,6 +41,7 @@ export function TurnstileWidget({
       widgetId.current = window.turnstile.render(container.current, {
         sitekey,
         action: 'analyze_ticker',
+        theme: 'dark',
         callback: onToken,
         'expired-callback': () => onToken(''),
         'error-callback': () => onToken(''),
