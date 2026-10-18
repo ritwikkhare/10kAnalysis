@@ -101,6 +101,23 @@ describe("Stage 4 grounded evaluation set", () => {
     expect(result).toMatchObject({ ok: true });
   });
 
+  it.each([
+    "Revenue of $120M was reported for the 10-K period ending September 27.",
+    "Revenue of $120M was reported for the quarter ended Sep. 27th.",
+  ])("treats a month-day date without a year as structural: %s", (claim) => {
+    const result = validateGroundedOutput(completeAnalysis(claim, "AAPL-revenue"), packet("AAPL", "Apple Inc."), "analysis");
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    ["Revenue rose 27% through September.", "27%"],
+    ["After September 27, revenue rose 21%.", "21%"],
+    ["Revenue in May 5 million units above plan.", "5 million"],
+  ])("still validates financial numbers next to month names: %s", (claim, token) => {
+    const result = validateGroundedOutput(completeAnalysis(claim, "AAPL-revenue"), packet("AAPL", "Apple Inc."), "analysis");
+    expect(result).toMatchObject({ ok: false, code: "NUMERIC_MISMATCH", diagnostics: { unsupported_numbers: [{ token }] } });
+  });
+
   it("accepts an already validated deterministic calculation only when its result and inputs are cited", () => {
     const source = numericPacket("Net margin: 20.00%; deterministic formula net income / revenue; calculation 24 / 120.", "AAPL-margin");
     const result = validateGroundedOutput(

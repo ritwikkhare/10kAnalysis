@@ -784,6 +784,8 @@ function withoutStructuralNumbers(value: string): string {
     .replace(/[−–—]/g, "-")
     .replace(/([+-])\s*([$€£])/g, "$2$1")
     .replace(new RegExp(`\\b${MONTH}\\s+\\d{1,2},?\\s+(?:19|20)\\d{2}\\b`, "gi"), " ")
+    // Yearless dates ("period ending September 27"): capitalized month, day 1-31, and no unit after it, so "May 5%" stays financial.
+    .replace(new RegExp(`\\b${MONTH}\\.?\\s+(?:3[01]|[12]\\d|0?[1-9])(?:st|nd|rd|th)?\\b(?![.,]?\\d|\\s*(?:%|percent|bps|basis|[kmbt]\\b|thousand|million|billion|trillion|x\\b|times?\\b|:\\s*1))`, "g"), " ")
     .replace(/\b(?:19|20)\d{2}[-/]\d{1,2}[-/]\d{1,2}\b/g, " ")
     .replace(/\b\d{1,2}[/]\d{1,2}[/](?:19|20)\d{2}\b/g, " ")
     .replace(/\b\d{10}-\d{2}-\d{6}\b/g, " ")
