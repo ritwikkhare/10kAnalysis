@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import migrationSql from "../migrations/0001_initial.sql?raw";
 import directoryMigrationSql from "../migrations/0003_sec_company_directory.sql?raw";
 import marketMigrationSql from "../migrations/0008_market_research.sql?raw";
+import strategyMigrationSql from "../migrations/0009_strategy_briefs.sql?raw";
 import {
   benchmarkYear,
   eightKHeadline,
@@ -17,6 +18,7 @@ import {
   type ResearchEnv,
 } from "../src/research.js";
 import type { AiModelRequest } from "../src/ai.js";
+import { generateStrategyBrief, getStrategyBrief, parseStrategy } from "../src/strategy.js";
 
 const queries = (sql: string) => sql.split(";").map((query) => query.trim()).filter(Boolean);
 const NOW = new Date("2026-10-21T15:00:00Z");
@@ -117,6 +119,7 @@ describe("market research", () => {
       { name: "0001_initial.sql", queries: queries(migrationSql) },
       { name: "0003_sec_company_directory.sql", queries: queries(directoryMigrationSql) },
       { name: "0008_market_research.sql", queries: queries(marketMigrationSql) },
+      { name: "0009_strategy_briefs.sql", queries: queries(strategyMigrationSql) },
     ]);
     await env.DB.prepare("INSERT INTO companies (schema_version, cik, ticker, name) VALUES ('1.0.0', ?, 'MKT', 'Market Test Corp')").bind(SUBJECT_CIK).run();
     await env.DB.batch([
@@ -268,5 +271,93 @@ describe("market research", () => {
     const response = await SELF.fetch("https://api.example.test/api/v1/companies/NOPE/news");
     expect(response.status).toBe(404);
     expect((await response.json() as any).data.error.code).toBe("COMPANY_NOT_ANALYZED");
+  });
+
+  describe("industry frameworks", () => {
+    const TEN_K = "0000000101-25-000099";
+    const COMPETITION_RISK = `MKT-${TEN_K}-risk-001`;
+    const TARIFF_RISK = `MKT-${TEN_K}-risk-002`;
+    const empty = { rating: "unclear", claims: [] };
+
+    beforeAll(async () => {
+      const riskUrl = (anchor: string) => `https://www.sec.gov/Archives/edgar/data/101/000000010125000099/mkt-10k.htm#${anchor}`;
+      await env.DB.prepare(
+        "INSERT INTO filings (accession_number, company_id, schema_version, form, filing_date, report_date, official_url, filing_index_url) SELECT ?, id, '1.0.0', '10-K', '2025-11-01', '2025-09-30', ?, ? FROM companies WHERE ticker = 'MKT'",
+      ).bind(TEN_K, riskUrl("top"), "https://www.sec.gov/Archives/edgar/data/101/000000010125000099/").run();
+      const passages: Array<[string, number, string]> = [
+        [COMPETITION_RISK, 1, "The company faces intense competition from larger rivals, which pressures pricing and margins."],
+        [TARIFF_RISK, 2, "New tariffs on imported components raise costs from suppliers and may reduce margins."],
+        [`MKT-${TEN_K}-risk-003`, 3, "The company's headquarters lease expires in a future period."],
+      ];
+      await env.DB.batch(passages.flatMap(([id, number, text]) => [
+        env.DB.prepare("INSERT INTO evidence_links (evidence_id, schema_version, evidence_type, label, filing_accession, source_url) VALUES (?, '1.0.0', 'risk_passage', ?, ?, ?)").bind(id, `Risk ${number}`, TEN_K, riskUrl(`risk-${number}`)),
+        env.DB.prepare("INSERT INTO risk_passages VALUES (?, ?, ?, 'Item 1A. Risk Factors', ?, '2025-09-30', ?, ?)").bind(id, TEN_K, number, text, `risk-${number}`, riskUrl(`risk-${number}`)),
+      ]));
+    });
+
+    const analysis = (overrides: Record<string, unknown> = {}) => ({
+      refused: false,
+      overview: [
+        { text: "MKT net margin of 25.00% ranks at the 100th percentile of its industry.", evidence_ids: ["industry-net_margin"] },
+        { text: "Industry revenue growth reached 99%.", evidence_ids: ["industry-revenue_growth"] },
+      ],
+      five_forces: {
+        rivalry: { rating: "high", claims: [{ text: "Intense competition from larger rivals pressures pricing.", evidence_ids: [COMPETITION_RISK] }] },
+        new_entrants: empty,
+        substitutes: empty,
+        supplier_power: { rating: "medium", claims: [{ text: "Tariffs on imported components raise supplier costs.", evidence_ids: [TARIFF_RISK] }] },
+        buyer_power: { rating: "high", claims: [{ text: "Large customers negotiate hard.", evidence_ids: ["missing-item"] }] },
+      },
+      pest: {
+        political: { claims: [{ text: "New tariffs on imported components raise costs.", evidence_ids: [TARIFF_RISK] }] },
+        economic: { claims: [{ text: "Market Test Corp raised its outlook after a 20% sales jump.", evidence_ids: ["news-press-11"] }] },
+        social: { claims: [] },
+        technological: { claims: [] },
+      },
+      ...overrides,
+    });
+
+    it("publishes only verified framework statements and marks unsupported forces unclear", async () => {
+      const requests: AiModelRequest[] = [];
+      const model = async (request: AiModelRequest) => { requests.push(request); return { response: JSON.stringify(analysis()) }; };
+      const created = await generateStrategyBrief(post("strategy-brief"), "MKT", researchEnv(), model, challenge, upstream(), clock);
+      const body: any = await created.json();
+      expect(created.status).toBe(201);
+      const result = body.data.analysis;
+      expect(result.overview.map((claim: any) => claim.text)).toEqual(["MKT net margin of 25.00% ranks at the 100th percentile of its industry."]);
+      const forces = Object.fromEntries(result.five_forces.map((force: any) => [force.key, force]));
+      expect(forces.rivalry).toMatchObject({ name: "Competitive rivalry", rating: "high" });
+      expect(forces.buyer_power).toMatchObject({ rating: "unclear", claims: [] });
+      expect(result.pest.map((factor: any) => [factor.key, factor.claims.length])).toEqual([["political", 1], ["economic", 1], ["social", 0], ["technological", 0]]);
+      expect(body.data.validation_details).toMatchObject({ rejected_claim_count: 2, sections_with_evidence: 4 });
+      const risk = body.data.evidence.find((entry: any) => entry.evidence_id === COMPETITION_RISK);
+      expect(risk.source_url).toMatch(/^https:\/\/www\.sec\.gov\//);
+      const itemIds = JSON.stringify(requests[0].messages[1].content);
+      expect(itemIds).toContain(COMPETITION_RISK);
+      expect(itemIds).not.toContain(`MKT-${TEN_K}-risk-003`);
+      const again = await generateStrategyBrief(post("strategy-brief"), "MKT", researchEnv(), model, challenge, upstream(), clock);
+      expect((await again.json() as any).meta.cached).toBe(true);
+      expect(requests).toHaveLength(1);
+      const read: any = await (await getStrategyBrief(get("strategy-brief"), "MKT", researchEnv(), upstream(), clock)).json();
+      expect(read.data).toMatchObject({ response_type: "strategy", is_current: true });
+    });
+
+    it("retries once with feedback, then refuses to publish an unverifiable analysis", async () => {
+      const requests: AiModelRequest[] = [];
+      const response = await generateStrategyBrief(post("strategy-brief"), "MKT", researchEnv({ AI_MODEL: "mock-strategy-unverified" }), async (request) => {
+        requests.push(request);
+        return analysis({ overview: [{ text: "Industry revenue growth reached 99%.", evidence_ids: ["industry-revenue_growth"] }] });
+      }, challenge, upstream(), clock);
+      expect(response.status).toBe(422);
+      expect((await response.json() as any).data.error.code).toBe("AI_BRIEF_UNVERIFIED");
+      expect(requests).toHaveLength(2);
+      expect(requests[1].messages.some((message) => message.content.includes("could not be verified"))).toBe(true);
+    });
+
+    it("parses provider envelopes and rejects malformed framework output", () => {
+      expect(parseStrategy({ choices: [{ message: { content: JSON.stringify(analysis()) } }] })?.forces.rivalry.rating).toBe("high");
+      expect(parseStrategy({ response: "{" })).toBeNull();
+      expect(parseStrategy({ response: { overview: [] } })).toBeNull();
+    });
   });
 });

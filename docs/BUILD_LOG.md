@@ -20,6 +20,11 @@
 > 0008), and optionally merges Finnhub press headlines when `FINNHUB_API_KEY` is set.
 > Live SEC requests require the `SEC_USER_AGENT` secret. AI news and industry briefs
 > use the same claim-level validator as filing Q&A and are stored in `market_briefs`.
+>
+> Strategic frameworks (`filinglens-strategy-v1`, migration 0009) add an industry
+> overview, Porter's Five Forces, and PEST to the Industry tab. The model returns
+> structured JSON; each statement is validated individually, ratings survive only with
+> a verified statement, and results are stored in `strategy_briefs`.
 
 **Live demo:** <https://filinglens.ritwikkhare.workers.dev>
 

@@ -5,7 +5,7 @@ import { ApiError, filingLensApi, type AiResponse, type IndustryData, type NewsF
 
 vi.mock('../lib/api', async (loadOriginal) => {
   const original = await loadOriginal<typeof import('../lib/api')>();
-  return { ...original, filingLensApi: { news: vi.fn(), industry: vi.fn(), getBrief: vi.fn(), generateBrief: vi.fn() } };
+  return { ...original, filingLensApi: { news: vi.fn(), industry: vi.fn(), getBrief: vi.fn(), generateBrief: vi.fn(), getStrategy: vi.fn(), generateStrategy: vi.fn() } };
 });
 vi.mock('./TurnstileWidget', () => ({
   TurnstileWidget: ({ onToken }: { onToken: (token: string) => void }) => <button type="button" onClick={() => onToken('verified')}>Verify</button>,
@@ -46,7 +46,10 @@ const brief: AiResponse = {
 
 describe('market panels', () => {
   afterEach(cleanup);
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(filingLensApi.getStrategy).mockRejectedValue(new ApiError('none', 404, 'BRIEF_NOT_FOUND'));
+  });
 
   it('lists press and SEC 8-K news and filters by source', async () => {
     vi.mocked(filingLensApi.news).mockResolvedValue(feed);

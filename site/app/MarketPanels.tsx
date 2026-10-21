@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, filingLensApi, type AiResponse, type BriefType, type IndustryData, type IndustryPeer, type NewsFeed, type NewsItem } from '../lib/api';
 import { Result, type ResultLabels } from './AiResearchPanel';
+import { StrategySection } from './StrategySection';
 import { TurnstileWidget } from './TurnstileWidget';
 
 type NewsFilter = 'all' | 'press' | 'sec_8k';
@@ -151,6 +152,7 @@ export function IndustryPanel({ ticker }: { ticker: string }) {
     </article>)}</div>
     {data.peers.length > 1 ? <PeerTable peers={data.peers} year={data.calendar_year} /> : <Empty title="No listed peers found" body="The SEC lists no other companies with this industry code and a ticker, so only the industry medians are shown." />}
     <p className="direction-note">Percentile is the share of the industry sample at or below {data.ticker}. For liabilities to assets, a higher percentile means more leverage.</p>
+    <StrategySection ticker={ticker} />
     {data.peer_headlines.length > 0 && <section className="market-subsection"><h5>Recent peer headlines</h5><NewsList items={data.peer_headlines} /></section>}
     <details className="method-note"><summary>Sources and method</summary><p>Peers share the SEC Standard Industrial Classification code. Figures come from SEC XBRL frames, which align each company’s annual report to the calendar year. Revenue growth compares the same revenue concept year over year.</p><div className="source-list">{data.sources.map((source) => <a className="evidence-link" href={source.source_url} target="_blank" rel="noreferrer" key={source.source_url}>{source.label}<span aria-hidden="true"> ↗</span></a>)}</div></details>
     <BriefSection ticker={ticker} type="industry" title="How it stacks up" description="An AI read of the benchmark and peer news. Every number is copied from the figures above and checked before it’s shown." labels={INDUSTRY_LABELS} available={data.sample_size > 0} />

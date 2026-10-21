@@ -893,7 +893,7 @@ function valueType(value: unknown): string {
   return typeof value;
 }
 
-function modelPayload(value: unknown): { candidate: unknown; envelope: ProviderEnvelope; finishReason?: string } {
+export function modelPayload(value: unknown): { candidate: unknown; envelope: ProviderEnvelope; finishReason?: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { candidate: value, envelope: "direct" };
   }

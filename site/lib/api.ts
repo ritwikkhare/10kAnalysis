@@ -78,6 +78,17 @@ export type IndustryMetric = { key: MetricKey; name: string; company_value: numb
 export type IndustryPeer = { ticker: string; cik: string; name: string; is_subject: boolean; revenue: number | null; revenue_growth: number | null; net_margin: number | null; operating_cash_flow_margin: number | null; liabilities_to_assets: number | null; filing_url: string | null };
 export type IndustryData = { ticker: string; sic: string; sic_description: string; calendar_year: number; sample_size: number; metrics: IndustryMetric[]; peers: IndustryPeer[]; peer_headlines: NewsItem[]; sources: Array<{ label: string; source_url: string }>; fetched_at: string; stale: boolean };
 export type BriefType = 'news' | 'industry';
+export type StrategyClaim = { text: string; evidence_ids: string[] };
+export type ForceRating = 'low' | 'medium' | 'high' | 'unclear';
+export type StrategyAnalysis = {
+  overview: StrategyClaim[];
+  five_forces: Array<{ key: string; name: string; rating: ForceRating; claims: StrategyClaim[] }>;
+  pest: Array<{ key: string; name: string; claims: StrategyClaim[] }>;
+};
+export type StrategyBrief = {
+  response_id: string; ticker: string; response_type: 'strategy'; model: string; prompt_version: string; generated_at: string;
+  is_current: boolean; analysis: StrategyAnalysis; evidence: Evidence[]; validation_details: Record<string, unknown>; disclaimer: string;
+};
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status?: number, public readonly code?: string) {
@@ -156,6 +167,13 @@ export const filingLensApi = {
     request<AiResponse>(`/companies/${encodeURIComponent(ticker)}/${type}-brief`, signal, { cache: 'no-store' }),
   generateBrief: (ticker: string, type: BriefType, turnstileToken: string, signal?: AbortSignal) =>
     request<AiResponse>(`/companies/${encodeURIComponent(ticker)}/${type}-brief`, signal, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ turnstile_token: turnstileToken }),
+    }),
+  getStrategy: (ticker: string, signal?: AbortSignal) =>
+    request<StrategyBrief>(`/companies/${encodeURIComponent(ticker)}/strategy-brief`, signal, { cache: 'no-store' }),
+  generateStrategy: (ticker: string, turnstileToken: string, signal?: AbortSignal) =>
+    request<StrategyBrief>(`/companies/${encodeURIComponent(ticker)}/strategy-brief`, signal, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ turnstile_token: turnstileToken }),
     }),

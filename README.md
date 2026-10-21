@@ -33,6 +33,10 @@ anything that can't be traced to a filing isn't shown.
   benchmarked live from SEC XBRL frames on revenue, growth, margins, and leverage, with
   industry medians, percentile ranks, a peer table, recent peer headlines, and an AI
   read of where the company stands.
+- **Industry analysis, Porter's Five Forces, and PEST.** An AI analysis built from the
+  latest company and peer headlines, recent 8-Ks, the company's 10-K risk factors, and
+  the peer benchmark. Each force is rated low, medium, or high pressure only when a
+  verified, cited statement supports it; otherwise it says there isn't enough evidence.
 - **AI research brief and Q&A.** A Llama 3.3 70B model (Workers AI) writes a summary
   and answers questions using only the stored evidence. Responses are published only
   after every claim passes citation and numeric checks.
@@ -106,8 +110,8 @@ All tests run offline against saved SEC responses and mocked AI providers.
 
 ```bash
 python -m unittest -v                # 49 Python pipeline tests
-cd api && pnpm install && pnpm test  # 94 API / Worker tests
-cd site && pnpm install && pnpm test # 29 website tests
+cd api && pnpm install && pnpm test  # 98 API / Worker tests
+cd site && pnpm install && pnpm test # 32 website tests
 ```
 
 ## Scope and limitations

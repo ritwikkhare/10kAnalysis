@@ -16,6 +16,7 @@ import {
   type AnalysisQueueMessage,
 } from "./onboarding.js";
 import { generateBrief, getBrief, industryBenchmark, newsFeed, type ResearchEnv } from "./research.js";
+import { generateStrategyBrief, getStrategyBrief } from "./strategy.js";
 
 const SEC_DIRECTORY_URL = "https://www.sec.gov/files/company_tickers.json";
 // Availability changes when a background job imports a company.  Do not cache
@@ -299,6 +300,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && parts.length === 5 && parts[2] === "companies" && (parts[4] === "news-brief" || parts[4] === "industry-brief")) {
     return generateBrief(request, parts[3], parts[4] === "news-brief" ? "news" : "industry", env as ResearchEnv, workersAiRunner(env as AiEnv));
   }
+  if (request.method === "POST" && parts.length === 5 && parts[2] === "companies" && parts[4] === "strategy-brief") {
+    return generateStrategyBrief(request, parts[3], env as ResearchEnv, workersAiRunner(env as AiEnv));
+  }
   if (request.method === "POST" && parts.length === 5 && parts[2] === "analysis-jobs" && parts[4] === "retry") {
     return retryAnalysisJob(request, parts[3], env);
   }
@@ -313,6 +317,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (parts.length === 5 && parts[2] === "companies" && parts[4] === "industry") return industryBenchmark(request, parts[3], env as ResearchEnv);
   if (parts.length === 5 && parts[2] === "companies" && parts[4] === "news-brief") return getBrief(request, parts[3], "news", env as ResearchEnv);
   if (parts.length === 5 && parts[2] === "companies" && parts[4] === "industry-brief") return getBrief(request, parts[3], "industry", env as ResearchEnv);
+  if (parts.length === 5 && parts[2] === "companies" && parts[4] === "strategy-brief") return getStrategyBrief(request, parts[3], env as ResearchEnv);
   if (parts.length === 5 && parts[2] === "filings" && parts[4] === "financials") return financials(parts[3], env);
   if (parts.length === 5 && parts[2] === "filings" && parts[4] === "ratios") return ratios(parts[3], env);
   if (parts.length === 5 && parts[2] === "filings" && parts[4] === "comparisons") return comparisons(parts[3], env);

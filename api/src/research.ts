@@ -108,7 +108,7 @@ export type IndustryData = {
   fetched_at: string;
 };
 
-class ResearchError extends Error {
+export class ResearchError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);
   }
@@ -266,7 +266,7 @@ function shortCompanyName(name: string): string {
   return name.replace(/\b(?:INC|CORP|CORPORATION|LTD|CO|PLC|HOLDINGS)\b\.?/gi, "").replace(/[,.]+\s*$/, "").replace(/\s+/g, " ").trim();
 }
 
-async function loadCompany(db: D1Database, tickerValue: string): Promise<Row | null> {
+export async function loadCompany(db: D1Database, tickerValue: string): Promise<Row | null> {
   const ticker = cleanTicker(tickerValue);
   if (!ticker) return null;
   return first(db, "SELECT id, ticker, cik, name FROM companies WHERE ticker = ?", [ticker]);
@@ -607,7 +607,7 @@ export async function loadIndustry(env: ResearchEnv, company: Row, fetcher: Fetc
 // ---------------------------------------------------------------- AI briefs
 
 type BriefType = "news" | "industry";
-type BriefSource = {
+export type BriefSource = {
   evidence_id: string;
   evidence_type: string;
   label: string;
@@ -617,7 +617,7 @@ type BriefSource = {
   source_evidence_ids: string[];
 };
 
-function newsGroundingItem(item: NewsItem): GroundingItem {
+export function newsGroundingItem(item: NewsItem): GroundingItem {
   const date = item.published_at.slice(0, 10);
   return {
     evidence_id: `news-${item.id}`,
@@ -628,7 +628,7 @@ function newsGroundingItem(item: NewsItem): GroundingItem {
   };
 }
 
-function newsSource(item: NewsItem): BriefSource {
+export function newsSource(item: NewsItem): BriefSource {
   const sec = item.kind === "sec_8k";
   return {
     evidence_id: `news-${item.id}`,
@@ -641,7 +641,7 @@ function newsSource(item: NewsItem): BriefSource {
   };
 }
 
-function industryPacketItems(data: IndustryData): Array<{ item: GroundingItem; source: BriefSource }> {
+export function industryPacketItems(data: IndustryData): Array<{ item: GroundingItem; source: BriefSource }> {
   const framesUrl = data.sources[1]?.source_url ?? null;
   const entries: Array<{ item: GroundingItem; source: BriefSource }> = [];
   const add = (id: string, type: string, label: string, content: string, sourceUrl: string | null) => entries.push({
@@ -766,7 +766,7 @@ async function latestBrief(db: D1Database, companyId: number, type: BriefType, m
   );
 }
 
-function researchFailure(error: unknown, ticker: string, action: string): Response {
+export function researchFailure(error: unknown, ticker: string, action: string): Response {
   const code = error instanceof ResearchError ? error.code : "UPSTREAM_UNAVAILABLE";
   console.error(JSON.stringify({ message: "market_research_failed", ticker, action, code, error: error instanceof Error ? error.message : "unknown_error" }));
   if (code === "SEC_NOT_CONFIGURED") return apiError(503, code, "Live SEC research is not configured for this deployment.");
