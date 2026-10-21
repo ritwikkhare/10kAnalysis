@@ -26,6 +26,13 @@ anything that can't be traced to a filing isn't shown.
   unrelated filings are never compared.
 - **Risk-factor changes.** The Item 1A text from consecutive 10-Ks is split into
   passages and labeled added, removed, or materially changed, shown side by side.
+- **News.** Recent press headlines (via Finnhub) and SEC 8-K announcements, merged
+  newest first, with an AI summary whose every statement links to the headline or
+  filing it came from.
+- **Industry analysis.** Same-industry peers from the company's SEC industry code,
+  benchmarked live from SEC XBRL frames on revenue, growth, margins, and leverage, with
+  industry medians, percentile ranks, a peer table, recent peer headlines, and an AI
+  read of where the company stands.
 - **AI research brief and Q&A.** A Llama 3.3 70B model (Workers AI) writes a summary
   and answers questions using only the stored evidence. Responses are published only
   after every claim passes citation and numeric checks.
@@ -75,7 +82,8 @@ flowchart LR
 ## Tech stack
 
 Python · TypeScript · React · Next.js (Vinext) · Cloudflare Workers, D1, Queues,
-Workers AI, and Turnstile · GitHub Actions · Vitest · Python `unittest`
+Workers AI, and Turnstile · SEC EDGAR and XBRL frames APIs · Finnhub · GitHub Actions ·
+Vitest · Python `unittest`
 
 ## Run it locally
 
@@ -98,8 +106,8 @@ All tests run offline against saved SEC responses and mocked AI providers.
 
 ```bash
 python -m unittest -v                # 49 Python pipeline tests
-cd api && pnpm install && pnpm test  # 79 API / Worker tests
-cd site && pnpm install && pnpm test # 23 website tests
+cd api && pnpm install && pnpm test  # 94 API / Worker tests
+cd site && pnpm install && pnpm test # 29 website tests
 ```
 
 ## Scope and limitations

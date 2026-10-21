@@ -11,20 +11,22 @@ const EXAMPLE_QUESTIONS = [
   'Which risk factors changed?',
 ];
 
-function ClaimCard({ claim, response }: { claim: AiClaim; response: AiResponse }) {
+export type ResultLabels = { score?: string; kinds?: Partial<Record<AiClaim['kind'], string>> };
+
+export function ClaimCard({ claim, response, labels }: { claim: AiClaim; response: AiResponse; labels?: ResultLabels }) {
   const sources = claim.evidence_ids.flatMap((id) => directEvidence(response.evidence, id));
   const unique = [...new Map(sources.map((source) => [source.evidence_id, source])).values()];
-  return <article className={`ai-claim ${claim.kind}`}><span>{claim.kind}</span><p>{claim.text}</p><div className="ai-citations">{unique.map((source) => <a href={source.source_url!} target="_blank" rel="noreferrer" key={source.evidence_id}>{source.label} · SEC ↗</a>)}</div></article>;
+  return <article className={`ai-claim ${claim.kind}`}><span>{labels?.kinds?.[claim.kind] ?? claim.kind}</span><p>{claim.text}</p><div className="ai-citations">{unique.map((source) => <a href={source.source_url ?? source.external_url ?? undefined} target="_blank" rel="noreferrer noopener" key={source.evidence_id}>{source.label} · {source.source_url ? 'SEC' : 'source'} ↗</a>)}</div></article>;
 }
 
-function Result({ response }: { response: AiResponse }) {
+export function Result({ response, labels }: { response: AiResponse; labels?: ResultLabels }) {
   if (response.refused) return <div className="ai-refusal" role="status"><strong>Filing evidence is insufficient</strong><p>{response.refusal_reason}</p></div>;
   const removed = Number(response.validation_details.rejected_claim_count ?? 0);
   const isAnswer = response.response_type === 'qa';
   return <>
-    {!isAnswer && <div className="ai-score"><div><span>Filing sentiment</span><strong className={response.sentiment}>{response.sentiment}</strong></div><div><span>Confidence</span><strong>{Math.round(response.confidence * 100)}%</strong></div><div><span>Validation</span><strong>Evidence passed</strong></div></div>}
-    <div className="ai-claims">{response.claims.map((claim) => <ClaimCard claim={claim} response={response} key={claim.claim_id} />)}</div>
-    {removed > 0 && <p className="ai-removed-note">{removed === 1 ? 'One generated statement was' : `${removed} generated statements were`} left out because {removed === 1 ? 'it' : 'they'} could not be verified against the cited SEC evidence.</p>}
+    {!isAnswer && <div className="ai-score"><div><span>{labels?.score ?? 'Filing sentiment'}</span><strong className={response.sentiment}>{response.sentiment}</strong></div><div><span>Confidence</span><strong>{Math.round(response.confidence * 100)}%</strong></div><div><span>Validation</span><strong>Evidence passed</strong></div></div>}
+    <div className="ai-claims">{response.claims.map((claim) => <ClaimCard claim={claim} response={response} labels={labels} key={claim.claim_id} />)}</div>
+    {removed > 0 && <p className="ai-removed-note">{removed === 1 ? 'One generated statement was' : `${removed} generated statements were`} left out because {removed === 1 ? 'it' : 'they'} could not be verified against the cited {response.response_type === 'qa' || response.response_type === 'analysis' ? 'SEC evidence' : 'sources'}.</p>}
     <details className="method-note"><summary>Model and audit record</summary><p>{response.model} · prompt {response.prompt_version} · generated {new Date(response.generated_at).toLocaleString()}</p></details>
   </>;
 }

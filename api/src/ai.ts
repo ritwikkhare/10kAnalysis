@@ -113,13 +113,13 @@ export type AiEnv = Pick<Env, "DB" | "AI"> & {
   TURNSTILE_SECRET?: string;
 };
 
-type VerifyChallenge = (
+export type VerifyChallenge = (
   token: unknown,
   clientIp: string,
   env: AiEnv,
 ) => Promise<TurnstileVerification>;
 
-const RESPONSE_SCHEMA: Record<string, unknown> = {
+export const RESPONSE_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -989,7 +989,7 @@ function providerOutputFailure(value: unknown): RetriableProviderFailure | null 
   return null;
 }
 
-async function modelAttempt(runner: AiModelRunner, request: AiModelRequest): Promise<unknown> {
+export async function modelAttempt(runner: AiModelRunner, request: AiModelRequest): Promise<unknown> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -1003,11 +1003,11 @@ async function modelAttempt(runner: AiModelRunner, request: AiModelRequest): Pro
   }
 }
 
-async function runModelWithBoundedRecovery(
+export async function runModelWithBoundedRecovery(
   runner: AiModelRunner,
   request: AiModelRequest,
   ticker: string,
-  responseType: "analysis" | "qa",
+  responseType: "analysis" | "qa" | "news" | "industry",
 ): Promise<unknown> {
   const firstResult = await modelAttempt(runner, request);
   const firstFailure = providerOutputFailure(firstResult);
@@ -1029,7 +1029,7 @@ async function runModelWithBoundedRecovery(
     next_attempt: 2,
   }));
   const recoveryInstruction = firstFailure === "EMPTY_MODEL_OUTPUT"
-    ? responseType === "analysis"
+    ? responseType !== "qa"
       ? "The preceding provider result was structurally empty. Return either a valid refusal or a complete analysis with one summary claim and at least one supporting, opposing, and uncertainty claim. Do not mention this recovery instruction."
       : "The preceding provider result was structurally empty. Return either a valid refusal or at least one answer claim. Do not mention this recovery instruction."
     : firstFailure === "INCONSISTENT_REFUSAL_STATE"
@@ -1124,8 +1124,8 @@ export function validateGroundedOutput(
   };
 }
 
-type QaRejection = { claim_index: number; code: string; diagnostics?: Record<string, unknown> };
-type QaValidation =
+export type QaRejection = { claim_index: number; code: string; diagnostics?: Record<string, unknown> };
+export type QaValidation =
   | { ok: true; output: AiModelOutput; details: Record<string, unknown> }
   | { ok: false; code: string; detail: string; diagnostics?: Record<string, unknown>; rejections?: QaRejection[] };
 
@@ -1133,7 +1133,7 @@ type QaValidation =
 // so one unverifiable sentence no longer discards a correct answer. Every
 // published claim still meets the same citation, lexical, numeric, and
 // stock-prediction rules as an analysis claim.
-export function validateQaOutput(raw: unknown, packet: GroundingPacket): QaValidation {
+export function validateQaOutput(raw: unknown, packet: GroundingPacket, options: { keepKinds?: boolean } = {}): QaValidation {
   const output = parseModelOutput(raw);
   if (!output || output.refused || output.refusal_reason !== null || !output.claims.length) {
     return validateGroundedOutput(raw, packet, "qa");
@@ -1148,7 +1148,7 @@ export function validateQaOutput(raw: unknown, packet: GroundingPacket): QaValid
       refusal_reason: null,
       claims: [{ kind: "answer", text: claim.text, evidence_ids: claim.evidence_ids }],
     }, packet, "qa");
-    if (result.ok) accepted.push(result.output.claims[0]);
+    if (result.ok) accepted.push({ ...result.output.claims[0], kind: options.keepKinds ? claim.kind : "answer" });
     else rejections.push({ claim_index: claimIndex, code: result.code, ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) });
   }
   if (!accepted.length) {
@@ -1184,7 +1184,7 @@ const QA_FEEDBACK: Record<string, string> = {
   STOCK_PREDICTION: "A claim gave a stock forecast or recommendation. Describe what the filings report only.",
 };
 
-function qaFeedbackRequest(request: AiModelRequest, rejections: QaRejection[]): AiModelRequest {
+export function qaFeedbackRequest(request: AiModelRequest, rejections: QaRejection[]): AiModelRequest {
   const guidance = [...new Set(rejections.map((entry) => QA_FEEDBACK[entry.code]).filter(Boolean))];
   return {
     ...request,
@@ -1334,7 +1334,7 @@ async function auditNumericalClaims(
   return audits;
 }
 
-async function sha256(value: string): Promise<string> {
+export async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -1482,7 +1482,7 @@ async function persist(
   return stored;
 }
 
-async function defaultChallenge(token: unknown, clientIp: string, env: AiEnv): Promise<TurnstileVerification> {
+export async function defaultChallenge(token: unknown, clientIp: string, env: AiEnv): Promise<TurnstileVerification> {
   return verifyTurnstile(token, clientIp, {
     secret: env.TURNSTILE_SECRET,
     expectedAction: env.TURNSTILE_ACTION,
@@ -1503,7 +1503,7 @@ async function requestBody(request: Request): Promise<Record<string, unknown> | 
   }
 }
 
-async function protectedBody(request: Request, ticker: string, env: AiEnv, verify: VerifyChallenge): Promise<{ body: Record<string, unknown> } | { response: Response }> {
+export async function protectedBody(request: Request, ticker: string, env: AiEnv, verify: VerifyChallenge): Promise<{ body: Record<string, unknown> } | { response: Response }> {
   if (env.AI_ENABLED !== "true") return { response: apiError(503, "AI_DISABLED", "AI filing analysis is not enabled in this deployment.") };
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown-client";
   const limited = await env.AI_RATE_LIMITER.limit({ key: `ai:${ticker}:${ip}` });

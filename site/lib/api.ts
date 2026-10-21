@@ -17,7 +17,7 @@ export type Company = {
   refresh_message?: string | null;
 };
 export type Filing = { accession_number: string; form: '10-K' | '10-Q'; filing_date: string; report_date: string; primary_document: string | null; official_url: string; filing_index_url: string };
-export type Evidence = { evidence_id: string; evidence_type: string; label: string; accession_number: string; source_url: string | null; source_evidence_ids: string[] };
+export type Evidence = { evidence_id: string; evidence_type: string; label: string; accession_number: string; source_url: string | null; external_url?: string | null; source_evidence_ids: string[] };
 export type Fact = { key: string; name: string; value: number; formatted_value: string; unit: string; taxonomy: string; concept: string; sec_label: string; period_type: 'instant' | 'duration'; period_start: string | null; period_end: string; fiscal_year: number | null; fiscal_period: string | null; filed: string; sec_concept_url: string; evidence_id: string };
 export type Ratio = { key: string; name: string; value: number; percentage: number; formatted_value: string; formula: string; calculation: string; numerator_evidence_id: string; denominator_evidence_id: string; evidence_id: string };
 export type ComparisonChange = { evidence_id: string; key: string; name: string; comparison_type: 'percent_change' | 'percentage_point_change'; direction: 'increased' | 'decreased' | 'unchanged'; change_value: number; formatted_change: string; formula: string; current_evidence_id: string; previous_evidence_id: string };
@@ -54,7 +54,7 @@ export type AiClaim = { claim_id: string; claim_order: number; kind: AiClaimKind
 export type AiResponse = {
   response_id: string;
   ticker: string;
-  response_type: 'analysis' | 'qa';
+  response_type: 'analysis' | 'qa' | 'news' | 'industry';
   question: string | null;
   model: string;
   prompt_version: string;
@@ -68,7 +68,16 @@ export type AiResponse = {
   claims: AiClaim[];
   evidence: Evidence[];
   disclaimer: string;
+  is_current?: boolean;
 };
+
+export type NewsItem = { id: string; kind: 'press' | 'sec_8k'; headline: string; summary: string | null; source: string; url: string; published_at: string };
+export type NewsFeed = { ticker: string; items: NewsItem[]; press_enabled: boolean; fetched_at: string; stale: boolean };
+export type MetricKey = 'revenue' | 'revenue_growth' | 'net_margin' | 'operating_cash_flow_margin' | 'liabilities_to_assets';
+export type IndustryMetric = { key: MetricKey; name: string; company_value: number | null; company_display: string | null; industry_median: number | null; median_display: string | null; percentile: number | null; sample_size: number };
+export type IndustryPeer = { ticker: string; cik: string; name: string; is_subject: boolean; revenue: number | null; revenue_growth: number | null; net_margin: number | null; operating_cash_flow_margin: number | null; liabilities_to_assets: number | null; filing_url: string | null };
+export type IndustryData = { ticker: string; sic: string; sic_description: string; calendar_year: number; sample_size: number; metrics: IndustryMetric[]; peers: IndustryPeer[]; peer_headlines: NewsItem[]; sources: Array<{ label: string; source_url: string }>; fetched_at: string; stale: boolean };
+export type BriefType = 'news' | 'industry';
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status?: number, public readonly code?: string) {
@@ -141,6 +150,15 @@ export const filingLensApi = {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ turnstile_token: turnstileToken }),
     }),
+  news: (ticker: string, signal?: AbortSignal) => request<NewsFeed>(`/companies/${encodeURIComponent(ticker)}/news`, signal),
+  industry: (ticker: string, signal?: AbortSignal) => request<IndustryData>(`/companies/${encodeURIComponent(ticker)}/industry`, signal),
+  getBrief: (ticker: string, type: BriefType, signal?: AbortSignal) =>
+    request<AiResponse>(`/companies/${encodeURIComponent(ticker)}/${type}-brief`, signal, { cache: 'no-store' }),
+  generateBrief: (ticker: string, type: BriefType, turnstileToken: string, signal?: AbortSignal) =>
+    request<AiResponse>(`/companies/${encodeURIComponent(ticker)}/${type}-brief`, signal, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ turnstile_token: turnstileToken }),
+    }),
   askAiQuestion: (ticker: string, question: string, turnstileToken: string, signal?: AbortSignal) =>
     request<AiResponse>(`/companies/${encodeURIComponent(ticker)}/ai-questions`, signal, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -165,7 +183,7 @@ export function directEvidence(evidence: Evidence[], evidenceId: string): Eviden
     visited.add(id);
     const item = byId.get(id);
     if (!item) return;
-    if (item.source_url) sources.push(item);
+    if (item.source_url || item.external_url) sources.push(item);
     item.source_evidence_ids.forEach(visit);
   }
   visit(evidenceId);

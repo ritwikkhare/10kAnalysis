@@ -13,6 +13,13 @@
 > refusals are no longer served from cache, and the stock-prediction filter targets
 > recommendations rather than ordinary risk-factor wording. Research briefs keep the
 > all-or-nothing validation described below.
+>
+> Market research (October 2026, `filinglens-market-v1`) adds News and Industry tabs.
+> The Worker fetches SEC submissions (8-Ks and SIC code), the SEC company list for the
+> SIC code, and SEC XBRL frames on demand, caches them in D1 (`market_cache`, migration
+> 0008), and optionally merges Finnhub press headlines when `FINNHUB_API_KEY` is set.
+> Live SEC requests require the `SEC_USER_AGENT` secret. AI news and industry briefs
+> use the same claim-level validator as filing Q&A and are stored in `market_briefs`.
 
 **Live demo:** <https://filinglens.ritwikkhare.workers.dev>
 
