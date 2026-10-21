@@ -325,22 +325,45 @@ function eightKNews(profile: CompanyProfile, clock: Clock): NewsItem[] {
 
 // ---------------------------------------------------------------- press headlines (Finnhub)
 
-async function pressNews(env: ResearchEnv, ticker: string, fetcher: Fetcher, clock: Clock, days: number, limit: number): Promise<NewsItem[]> {
-  if (!env.FINNHUB_API_KEY) return [];
-  const url = `https://finnhub.io/api/v1/company-news?symbol=${encodeURIComponent(ticker)}&from=${daysAgo(clock, days)}&to=${daysAgo(clock, 0)}&token=${encodeURIComponent(env.FINNHUB_API_KEY)}`;
+const NAME_ALIASES: Record<string, string[]> = { GOOG: ["Google"], GOOGL: ["Google"], META: ["Facebook", "Instagram"] };
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Finnhub's company feed includes market roundups that merely tag a ticker. A
+// press item is kept only when its headline or summary names the company: the
+// ticker as an exact uppercase word, or its distinctive first name word.
+export function pressRelevance(ticker: string, name: string): (headline: string, summary: string) => "headline" | "summary" | null {
+  const nameWord = shortCompanyName(name).replace(/\.com\b/i, "").split(/[\s,]+/).find((part) => part.length >= 3);
+  const names = [nameWord, ...(NAME_ALIASES[ticker] ?? [])].filter((value): value is string => Boolean(value));
+  const tickerPattern = new RegExp(`(?<![A-Za-z0-9])\\$?${escapeRegExp(ticker)}(?![A-Za-z0-9])`);
+  const namePattern = names.length ? new RegExp(`\\b(?:${names.map(escapeRegExp).join("|")})\\b`, "i") : null;
+  const mentions = (text: string) => tickerPattern.test(text) || Boolean(namePattern?.test(text));
+  return (headline, summary) => (mentions(headline) ? "headline" : mentions(summary) ? "summary" : null);
+}
+
+async function pressNews(env: ResearchEnv, ticker: string, name: string, fetcher: Fetcher, clock: Clock, days: number, limit: number): Promise<NewsItem[]> {
+  const apiKey = env.FINNHUB_API_KEY?.trim();
+  if (!apiKey) return [];
+  const url = `https://finnhub.io/api/v1/company-news?symbol=${encodeURIComponent(ticker)}&from=${daysAgo(clock, days)}&to=${daysAgo(clock, 0)}&token=${encodeURIComponent(apiKey)}`;
+  const relevance = pressRelevance(ticker, name);
   const body = await fetchJson(fetcher, url, { accept: "application/json" }, "Press headline service");
   if (!Array.isArray(body)) return [];
   const seen = new Set<string>();
-  const items: NewsItem[] = [];
+  const items: Array<NewsItem & { match: "headline" | "summary" }> = [];
   for (const raw of body as Array<Record<string, unknown>>) {
     const headline = String(raw.headline ?? "").replace(/\s+/g, " ").trim();
     const link = String(raw.url ?? "");
     const timestamp = Number(raw.datetime);
     const key = headline.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     if (!headline || !key || seen.has(key) || !/^https:\/\//.test(link) || !Number.isFinite(timestamp)) continue;
-    seen.add(key);
     const summary = String(raw.summary ?? "").replace(/\s+/g, " ").trim();
+    const match = relevance(headline, summary);
+    if (!match) continue;
+    seen.add(key);
     items.push({
+      match,
       id: `press-${String(raw.id ?? key).slice(0, 80).replace(/[^A-Za-z0-9._-]/g, "-")}`,
       kind: "press",
       headline: headline.slice(0, 300),
@@ -350,7 +373,13 @@ async function pressNews(env: ResearchEnv, ticker: string, fetcher: Fetcher, clo
       published_at: new Date(timestamp * 1000).toISOString(),
     });
   }
-  return items.sort((left, right) => right.published_at.localeCompare(left.published_at)).slice(0, limit);
+  // Headlines that name the company win the limited slots; the kept set is
+  // then shown newest first.
+  return items
+    .sort((left, right) => (left.match === right.match ? 0 : left.match === "headline" ? -1 : 1) || right.published_at.localeCompare(left.published_at))
+    .slice(0, limit)
+    .map(({ match: _match, ...item }) => item)
+    .sort((left, right) => right.published_at.localeCompare(left.published_at));
 }
 
 export async function loadNews(env: ResearchEnv, company: Row, fetcher: Fetcher = fetch, clock: Clock = () => new Date()): Promise<NewsFeed & { stale: boolean }> {
@@ -358,7 +387,7 @@ export async function loadNews(env: ResearchEnv, company: Row, fetcher: Fetcher 
   const result = await cached(env.DB, `news:${ticker}:${env.FINNHUB_API_KEY ? "press" : "sec"}`, NEWS_TTL_MS, clock, async () => {
     const [profile, press] = await Promise.all([
       companyProfile(env, String(company.cik), fetcher, clock),
-      pressNews(env, ticker, fetcher, clock, PRESS_WINDOW_DAYS, MAX_PRESS_ITEMS).catch((error) => {
+      pressNews(env, ticker, String(company.name), fetcher, clock, PRESS_WINDOW_DAYS, MAX_PRESS_ITEMS).catch((error) => {
         // Press headlines are additive; an outage there must not hide SEC 8-Ks.
         console.warn(JSON.stringify({ message: "press_news_unavailable", ticker, error: error instanceof Error ? error.message : "unknown_error" }));
         return [] as NewsItem[];
@@ -550,7 +579,7 @@ export async function loadIndustry(env: ResearchEnv, company: Row, fetcher: Fetc
     ].sort((left, right) => (right.revenue ?? 0) - (left.revenue ?? 0));
     const peerHeadlines = env.FINNHUB_API_KEY
       ? (await mapLimited(peerMetrics.slice(0, 3), 3, (entry) =>
-        pressNews(env, names.get(entry.cik)!.ticker, fetcher, clock, 7, 4).catch(() => [] as NewsItem[]))).flat()
+        pressNews(env, names.get(entry.cik)!.ticker, names.get(entry.cik)!.name, fetcher, clock, 7, 4).catch(() => [] as NewsItem[]))).flat()
       : [];
     return {
       ticker,

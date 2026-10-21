@@ -12,6 +12,7 @@ import {
   median,
   newsFeed,
   percentileRank,
+  pressRelevance,
   type Fetcher,
   type ResearchEnv,
 } from "../src/research.js";
@@ -79,6 +80,7 @@ const press = (symbol: string) => symbol === "MKT"
     { id: 12, datetime: Date.parse("2026-10-19T12:00:00Z") / 1000, headline: "Market Test Corp raises outlook after 20% sales jump!", source: "Other", summary: "", url: "https://news.example.com/dup" },
     { id: 13, datetime: Date.parse("2026-10-18T12:00:00Z") / 1000, headline: "Regulators open probe into Market Test Corp", source: "Wire", summary: "", url: "https://news.example.com/b" },
     { id: 14, datetime: Date.parse("2026-10-17T12:00:00Z") / 1000, headline: "Insecure link", source: "Wire", summary: "", url: "http://news.example.com/c" },
+    { id: 15, datetime: Date.parse("2026-10-21T09:00:00Z") / 1000, headline: "XRP price prediction: what would it take?", source: "Yahoo", summary: "Crypto roundup.", url: "https://news.example.com/off-topic" },
   ]
   : [{ id: 90, datetime: Date.parse("2026-10-16T12:00:00Z") / 1000, headline: `${symbol} expands production`, source: "Wire", summary: "", url: `https://news.example.com/${symbol}` }];
 
@@ -136,6 +138,18 @@ describe("market research", () => {
     expect(eightKHeadline(["9.01"])).toBe("Financial statements and exhibits");
     expect(benchmarkYear(() => new Date("2026-10-21T00:00:00Z"))).toBe(2025);
     expect(benchmarkYear(() => new Date("2026-02-01T00:00:00Z"))).toBe(2024);
+  });
+
+  it("keeps only press items that name the company or its ticker", () => {
+    const apple = pressRelevance("AAPL", "Apple Inc.");
+    expect(apple("Apple unveils new chips", "")).toBe("headline");
+    expect(apple("Why $AAPL slipped today", "")).toBe("headline");
+    expect(apple("Five ETFs for retirees", "Holdings include Apple and Microsoft.")).toBe("summary");
+    expect(apple("XRP price prediction", "Crypto roundup.")).toBeNull();
+    expect(apple("Pineapple prices climb", "")).toBeNull();
+    expect(pressRelevance("AMZN", "Amazon.com, Inc.")("Amazon expands same-day delivery", "")).toBe("headline");
+    expect(pressRelevance("GOOG", "Alphabet Inc.")("Google wins cloud contract", "")).toBe("headline");
+    expect(pressRelevance("BA", "Boeing Co")("Ba-sed on data, markets rose", "")).toBeNull();
   });
 
   it("refuses live SEC requests without a declared contact user agent", async () => {
